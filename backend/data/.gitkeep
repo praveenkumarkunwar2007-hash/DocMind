@@ -1,0 +1,1 @@
+This folder stores the local SQLite database at runtime. Do not commit the database or private user documents.

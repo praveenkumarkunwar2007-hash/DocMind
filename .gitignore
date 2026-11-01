@@ -1,0 +1,31 @@
+# Python bytecode and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+*.env
+
+# Local private content and database
+# The app stores uploaded document text, passages, and chat history here.
+backend/data/*.db
+backend/data/*.sqlite
+backend/data/*.sqlite3
+uploads/
+private_documents/
+
+# Editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and test output
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
