@@ -24,13 +24,16 @@ INDEX_PATH = STATIC_DIR / "index.html"
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 MODEL_NAME = os.getenv("MODEL_NAME", "qwen2.5:0.5b")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+HF_INFERENCE_MODEL = os.getenv("HF_INFERENCE_MODEL", "Qwen/Qwen2.5-72B-Instruct")
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # 8 MiB per upload
 MAX_TEXT_CHARS = 200_000
 MAX_CONTEXT_CHARS = 6_000
 
 DATA_DIR.mkdir(exist_ok=True)
 MODEL_FILE = BASE_DIR / "qwen2.5_0.5b_model.pkl"
-HF_MODEL_REPO = os.getenv("HF_MODEL_REPO", "praveenkumarkunwar2007-hash/DocMind-Qwen-Model")
+HF_MODEL_REPO = os.getenv("HF_MODEL_REPO", "Praveen081/DocMind-Qwen-Model")
 
 def ensure_model_exists() -> None:
     """Download the model checkpoint from Hugging Face Hub if not present locally."""
@@ -185,7 +188,47 @@ def list_documents() -> list[dict]:
 
 
 def call_local_model(prompt: str) -> str:
-    """Call the Ollama API on this computer; no external AI provider is used."""
+    """Call the AI model (Hugging Face API, Groq, or local Ollama)."""
+    # 1. Hugging Face Serverless Inference API
+    if HF_TOKEN:
+        try:
+            url = f"https://api-inference.huggingface.co/models/{HF_INFERENCE_MODEL}"
+            headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+            payload = {
+                "inputs": prompt,
+                "parameters": {"max_new_tokens": 512, "temperature": 0.2, "return_full_text": False}
+            }
+            res = requests.post(url, headers=headers, json=payload, timeout=60)
+            if res.ok:
+                data = res.json()
+                if isinstance(data, list) and len(data) > 0:
+                    answer = data[0].get("generated_text", "").strip()
+                elif isinstance(data, dict):
+                    answer = data.get("generated_text", "").strip()
+                else:
+                    answer = ""
+                if answer:
+                    return answer
+        except Exception as exc:
+            print(f"HF Inference error: {exc}")
+
+    # 2. Groq Cloud API (Fast fallback if configured)
+    if GROQ_API_KEY:
+        try:
+            headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+            payload = {
+                "model": "qwen-2.5-32b",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2,
+                "max_tokens": 512,
+            }
+            res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=60)
+            if res.ok:
+                return res.json()["choices"][0]["message"]["content"].strip()
+        except Exception as exc:
+            print(f"Groq error: {exc}")
+
+    # 3. Local or Tunneled Ollama
     try:
         response = requests.post(
             f"{OLLAMA_URL}/api/generate",
@@ -196,7 +239,7 @@ def call_local_model(prompt: str) -> str:
                 "keep_alive": "2m",
                 "options": {
                     "num_ctx": 2048,
-                    "num_predict": 180,
+                    "num_predict": 300,
                     "temperature": 0.2,
                 },
             },
@@ -210,7 +253,7 @@ def call_local_model(prompt: str) -> str:
     except requests.ConnectionError as exc:
         raise HTTPException(
             status_code=503,
-            detail="Ollama is not running. Open Ollama and try again.",
+            detail="AI model is offline. If deploying on Render, set HF_TOKEN in your Render Environment Variables.",
         ) from exc
     except requests.Timeout as exc:
         raise HTTPException(
@@ -235,6 +278,10 @@ def home() -> HTMLResponse:
 
 @app.get("/api/status")
 def status() -> dict:
+    if HF_TOKEN:
+        return {"ollama_running": True, "model_available": True, "model": HF_INFERENCE_MODEL, "provider": "Hugging Face"}
+    if GROQ_API_KEY:
+        return {"ollama_running": True, "model_available": True, "model": "Qwen 2.5", "provider": "Groq"}
     try:
         response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=2)
         response.raise_for_status()
@@ -246,6 +293,7 @@ def status() -> dict:
             "model_available": available,
             "model": MODEL_NAME,
             "models": names,
+            "provider": "Ollama"
         }
     except requests.RequestException:
         return {"ollama_running": False, "model_available": False, "model": MODEL_NAME, "models": []}
