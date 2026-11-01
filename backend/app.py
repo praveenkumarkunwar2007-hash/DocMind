@@ -35,33 +35,6 @@ INDEX_PATH = STATIC_DIR / "index.html"
 # ---------------------------------------------------------------------------
 # Chat endpoint – simple wrapper for the LLM
 # ---------------------------------------------------------------------------
-from pydantic import BaseModel
-
-class ChatRequest(BaseModel):
-    message: str
-
-class ChatResponse(BaseModel):
-    answer: str
-
-@app.post("/api/chat", response_model=ChatResponse)
-async def chat_endpoint(req: ChatRequest, request: Request):
-    """Handle a user query.
-    For now this just forwards the question to the configured LLM via
-    `call_local_model`. In a full implementation you would also retrieve
-    relevant document passages and include source citations.
-    """
-    # Resolve session id (if any) – not used for the simple implementation
-    _ = getattr(request.state, "session_id", None)
-    try:
-        answer = call_local_model(req.question)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-    return ChatResponse(answer=answer)
-
-@app.get("/", response_class=HTMLResponse)
-async def root():
-    return HTMLResponse(INDEX_PATH.read_text(), status_code=200)
-
 PORT = int(os.environ.get("PORT", 8000))
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 MODEL_NAME = os.getenv("MODEL_NAME", "qwen2.5:0.5b")
@@ -100,33 +73,6 @@ async def favicon():
 # ---------------------------------------------------------------------------
 # Chat endpoint – simple wrapper for the LLM
 # ---------------------------------------------------------------------------
-from pydantic import BaseModel
-
-class ChatRequest(BaseModel):
-    message: str
-
-class ChatResponse(BaseModel):
-    answer: str
-
-@app.post("/api/chat", response_model=ChatResponse)
-async def chat_endpoint(req: ChatRequest, request: Request):
-    """Handle a user query.
-    For now this just forwards the question to the configured LLM via
-    `call_local_model`. In a full implementation you would also retrieve
-    relevant document passages and include source citations.
-    """
-    # Resolve session id (if any) – not used for the simple implementation
-    _ = getattr(request.state, "session_id", None)
-    try:
-        answer = call_local_model(req.question)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-    return ChatResponse(answer=answer)
-
-@app.get("/", response_class=HTMLResponse)
-async def root():
-    return HTMLResponse(INDEX_PATH.read_text(), status_code=200)
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
