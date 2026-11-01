@@ -11,7 +11,7 @@ from pathlib import Path
 import requests
 from docx import Document as WordDocument
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
@@ -188,42 +188,50 @@ def list_documents() -> list[dict]:
 
 
 def call_local_model(prompt: str) -> str:
-    """Call the AI model (Hugging Face API, Groq, or local Ollama)."""
-    # 1. Hugging Face Serverless Inference API
+    """Call the AI model (Hugging Face Router, Groq, or local Ollama)."""
+    # 1. Hugging Face Serverless Router (OpenAI-compatible)
     if HF_TOKEN:
-        try:
-            url = f"https://api-inference.huggingface.co/models/{HF_INFERENCE_MODEL}"
-            headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-            payload = {
-                "inputs": prompt,
-                "parameters": {"max_new_tokens": 512, "temperature": 0.2, "return_full_text": False}
-            }
-            res = requests.post(url, headers=headers, json=payload, timeout=60)
-            if res.ok:
-                data = res.json()
-                if isinstance(data, list) and len(data) > 0:
-                    answer = data[0].get("generated_text", "").strip()
-                elif isinstance(data, dict):
-                    answer = data.get("generated_text", "").strip()
+        token = HF_TOKEN.strip().strip("'").strip('"')
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": HF_INFERENCE_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+            "max_tokens": 512,
+        }
+        for url in [
+            "https://router.huggingface.co/v1/chat/completions",
+            "https://router.huggingface.co/hf-inference/v1/chat/completions",
+        ]:
+            try:
+                res = requests.post(url, headers=headers, json=payload, timeout=45)
+                if res.status_code == 200:
+                    data = res.json()
+                    choices = data.get("choices", [])
+                    if choices:
+                        answer = choices[0].get("message", {}).get("content", "").strip()
+                        if answer:
+                            return answer
                 else:
-                    answer = ""
-                if answer:
-                    return answer
-        except Exception as exc:
-            print(f"HF Inference error: {exc}")
+                    print(f"HF Router returned {res.status_code}: {res.text[:150]}")
+            except Exception as exc:
+                print(f"HF Router request error on {url}: {exc}")
 
     # 2. Groq Cloud API (Fast fallback if configured)
     if GROQ_API_KEY:
         try:
-            headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+            headers = {"Authorization": f"Bearer {GROQ_API_KEY.strip()}", "Content-Type": "application/json"}
             payload = {
                 "model": "qwen-2.5-32b",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.2,
                 "max_tokens": 512,
             }
-            res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=60)
-            if res.ok:
+            res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=30)
+            if res.status_code == 200:
                 return res.json()["choices"][0]["message"]["content"].strip()
         except Exception as exc:
             print(f"Groq error: {exc}")
@@ -245,28 +253,33 @@ def call_local_model(prompt: str) -> str:
             },
             timeout=180,
         )
-        response.raise_for_status()
-        answer = response.json().get("response", "").strip()
-        if not answer:
-            raise HTTPException(status_code=502, detail="The local model returned an empty answer. Please try again.")
-        return answer
-    except requests.ConnectionError as exc:
+        if response.status_code == 200:
+            answer = response.json().get("response", "").strip()
+            if answer:
+                return answer
+    except Exception as exc:
+        print(f"Local Ollama error: {exc}")
+
+    # Clear error message for the user:
+    if not HF_TOKEN and not GROQ_API_KEY:
         raise HTTPException(
             status_code=503,
-            detail="AI model is offline. If deploying on Render, set HF_TOKEN in your Render Environment Variables.",
-        ) from exc
-    except requests.Timeout as exc:
-        raise HTTPException(
-            status_code=504,
-            detail="The local model took too long to respond. Try a shorter question.",
-        ) from exc
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"Local Ollama request failed: {exc}") from exc
+            detail="AI inference engine is not connected. Add HF_TOKEN in your Render Environment Variables.",
+        )
+    raise HTTPException(
+        status_code=502,
+        detail="AI service did not return an answer. Please verify your HF_TOKEN has 'Inference' permission in Hugging Face settings.",
+    )
 
 
 class ChatInput(BaseModel):
     question: str = Field(default="", max_length=2_000)
     mode: str = Field(default="ask", max_length=20)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> Response:
+    return Response(status_code=204)
 
 
 @app.get("/", response_class=HTMLResponse)
