@@ -1,0 +1,8 @@
+backend/qwen2.5_0.5b_model.pkl
+*.pkl
+.venv/
+__pycache__/
+*.pyc
+.git/
+.pytest_cache/
+backend/data/*.db

@@ -29,6 +29,21 @@ MAX_TEXT_CHARS = 200_000
 MAX_CONTEXT_CHARS = 6_000
 
 DATA_DIR.mkdir(exist_ok=True)
+MODEL_FILE = BASE_DIR / "qwen2.5_0.5b_model.pkl"
+HF_MODEL_REPO = os.getenv("HF_MODEL_REPO", "praveenkumarkunwar2007-hash/DocMind-Qwen-Model")
+
+def ensure_model_exists() -> None:
+    """Download the model checkpoint from Hugging Face Hub if not present locally."""
+    if not MODEL_FILE.exists():
+        try:
+            from huggingface_hub import hf_hub_download
+            print(f"Downloading model checkpoint from Hugging Face Hub ({HF_MODEL_REPO})...")
+            hf_hub_download(repo_id=HF_MODEL_REPO, filename="qwen2.5_0.5b_model.pkl", local_dir=str(BASE_DIR))
+            print("Model checkpoint ready.")
+        except Exception as exc:
+            print(f"Notice: Model checkpoint check skipped: {exc}")
+
+ensure_model_exists()
 app = FastAPI(title="DocMind AI", version="1.0.0")
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
