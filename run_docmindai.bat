@@ -7,5 +7,6 @@ if not exist ".venv\Scripts\python.exe" (
   pause
   exit /b 1
 )
-echo Starting DocMind AI at http://127.0.0.1:8000
-.venv\Scripts\python.exe -m uvicorn app:app --app-dir backend --host 127.0.0.1 --port 8000
+if not defined PORT set "PORT=8000"
+echo Starting DocMind AI at http://127.0.0.1:%PORT%
+.venv\Scripts\python.exe -m uvicorn app:app --app-dir backend --host 127.0.0.1 --port %PORT%

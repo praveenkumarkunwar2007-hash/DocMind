@@ -4,17 +4,17 @@ emoji: 📄
 colorFrom: indigo
 colorTo: blue
 sdk: docker
-app_port: 7860
+app_port: 8000
 pinned: false
 ---
 
 # DocMind AI
 
-DocMind AI is a local-first, privacy-focused document assistant powered by FastAPI, SQLite, and Ollama.
+DocMind AI is a document assistant powered by FastAPI, SQLite, and configurable AI providers.
 
 ## Features
-- **Private Knowledge Base:** All documents, chunks, and history are stored locally in SQLite (`backend/data/docmind.db`).
-- **Local AI:** Queries and summaries are generated locally via Ollama (`qwen2.5:0.5b`).
+- **Isolated workspaces:** Each browser receives a cryptographically random, HttpOnly session cookie. Documents, chunks, and chat history are scoped to that session.
+- **AI providers:** Inference uses a configured Hugging Face Router, Groq, or reachable Ollama server.
 - **Multi-format Ingestion:** Supports `.pdf`, `.docx`, `.txt`, and `.md` files.
 - **Three Modes:**
   - **Ask documents:** Retrieve relevant passages and answer questions.
@@ -23,49 +23,67 @@ DocMind AI is a local-first, privacy-focused document assistant powered by FastA
 
 ---
 
-## Prerequisites
-1. **Python 3.12** installed and added to PATH.
-2. **Ollama** installed with the Qwen 2.5 (0.5B) model:
+## Local Windows setup
+
+1. Install **Python 3.12** and add it to PATH.
+2. To use local inference, install Ollama and download the model:
    ```bash
    ollama pull qwen2.5:0.5b
    ```
-3. **Git LFS** (required if committing or pushing large model weights like `.pkl` to GitHub):
-   ```bash
-   git lfs install
-   ```
-
----
-
-## Quick Start on Windows
-
-1. **Run Setup:**
-   Double-click `setup_windows.bat` or run:
+3. From the repository directory, install dependencies and start the backend:
    ```cmd
    setup_windows.bat
-   ```
-   This creates the Python virtual environment (`.venv`) and installs all dependencies from `backend/requirements.txt`.
-
-2. **Start the App:**
-   Double-click `run_docmindai.bat` or run:
-   ```cmd
    run_docmindai.bat
    ```
    Open your browser at [http://127.0.0.1:8000](http://127.0.0.1:8000).
+
+Run tests with:
+```cmd
+.venv\Scripts\python.exe -m pip install -r backend\requirements-dev.txt
+.venv\Scripts\python.exe -m pytest -q
+```
+
+The backend defaults to port 8000 and honors the `PORT` environment variable. The Windows launcher binds to `127.0.0.1`; the container binds to `0.0.0.0`.
 
 ---
 
 ## GitHub Pages
 
-The frontend is deployed from `frontend/` by the GitHub Actions workflow whenever changes are pushed to `main`. In the repository settings, open **Settings → Pages** and set **Build and deployment → Source** to **GitHub Actions**. The first deployment publishes the site at `https://praveenkumarkunwar2007-hash.github.io/DocMind/`.
+The frontend is deployed from `frontend/` by the GitHub Actions workflow whenever changes are pushed to `main`. In the repository settings, open **Settings → Pages** and set **Build and deployment → Source** to **GitHub Actions**. The site is published at `https://praveenkumarkunwar2007-hash.github.io/DocMind/`.
 
-GitHub Pages hosts only the static frontend; document and chat API requests use the backend at `https://docmind-y5n4.onrender.com`. The backend downloads `qwen2.5_0.5b_model.pkl` from [`Praveen081/DocMind-Qwen-Model`](https://huggingface.co/Praveen081/DocMind-Qwen-Model) when the file is absent. Chat inference is performed separately by Ollama; the checkpoint download does not start Ollama or provide inference. To enable chat on Render, configure `OLLAMA_URL` to a reachable Ollama server and ensure `MODEL_NAME` is installed there (the default is `qwen2.5:0.5b`). Set `DOCMIND_API_URL` in the browser's local storage to override the frontend API URL, or set `HF_MODEL_REPO` on the backend to override the checkpoint repository.
+GitHub Pages hosts only the static frontend; document and chat API requests use the backend at `https://docmind-y5n4.onrender.com`. The frontend sends credentialed requests so the backend's HttpOnly session cookie is included. HTTPS cookies use `SameSite=None; Secure` for the cross-origin Pages-to-Render request. Some browsers block third-party cookies; for reliable sessions, open the backend's own URL or use a custom frontend/backend arrangement on the same site.
+
+## Render deployment
+
+Create a Docker web service with the repository root as its root directory and `Dockerfile` as its Dockerfile. The container starts with:
+
+```sh
+uvicorn app:app --app-dir backend --host 0.0.0.0 --port ${PORT:-8000}
+```
+
+Render supplies `PORT`; the container defaults to 8000. `GET /health` returns `{"status":"ok"}`. Configure `FRONTEND_ORIGINS` as a comma-separated list of exact frontend origins, for example:
+
+```text
+https://praveenkumarkunwar2007-hash.github.io
+```
+
+Configure at least one inference provider in Render's environment settings:
+
+- `HF_TOKEN` (and optionally `HF_INFERENCE_MODEL`)
+- `GROQ_API_KEY`
+- `OLLAMA_URL` and optionally `MODEL_NAME` when Ollama is reachable from Render. `127.0.0.1` only works when Ollama runs in the same container.
+
+Do not configure secrets in frontend code. The `.pkl` checkpoint is not loaded or used by the application; inference is performed by the configured provider. It is intentionally excluded from the Docker image, so it cannot make container startup download or load a 1.84 GB file.
+
+Render's default filesystem is ephemeral. To keep documents and chat history across restarts, attach a persistent disk mounted at `/var/data` and set `DOCMIND_DATA_DIR=/var/data`. Without a persistent disk, stored data can be lost when the service restarts or redeploys. The database is shared by the process but every document, chunk retrieval, deletion, and history query is filtered by its opaque session owner ID.
+
+The Pages frontend can override the backend URL by setting `DOCMIND_API_URL` in browser local storage.
 
 ---
 
 ## Repository & Git LFS Notes
 
-This repository contains large model files such as `backend/qwen2.5_0.5b_model.pkl` (~1.84 GB).
-To push this repository to GitHub without exceeding file size limits:
+This repository may contain large model files such as `backend/qwen2.5_0.5b_model.pkl`. The application does not load this checkpoint; local inference uses Ollama instead. Git LFS may be needed when managing this large file in Git:
 1. Ensure Git LFS is initialized:
    ```bash
    git lfs install

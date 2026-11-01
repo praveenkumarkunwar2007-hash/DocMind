@@ -52,6 +52,23 @@ const API_BASE = (window.location.hostname === "127.0.0.1" || window.location.ho
   ? ""
   : (localStorage.getItem("DOCMIND_API_URL") || "https://docmind-y5n4.onrender.com");
 
+async function apiFetch(path, options = {}) {
+  return fetch(`${API_BASE}${path}`, {...options, credentials:"include"});
+}
+
+async function readApiResponse(response) {
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error(`The server returned an invalid response (HTTP ${response.status}).`);
+  }
+  if (!response.ok) {
+    throw new Error(data.error || data.detail || `Request failed (HTTP ${response.status}).`);
+  }
+  return data;
+}
+
 const $ = id => document.getElementById(id);
 let currentMode = "ask";
 let busy = false;
@@ -99,9 +116,8 @@ function showSources(sources) {
 
 async function loadDocuments() {
   try {
-    const response = await fetch(`${API_BASE}/api/documents`);
-    if (!response.ok) throw new Error("Library request failed.");
-    const data = await response.json();
+    const response = await apiFetch("/api/documents");
+    const data = await readApiResponse(response);
     const area = $("docList");
     area.replaceChildren();
     const docs = data.documents || [];
@@ -138,9 +154,8 @@ async function loadDocuments() {
         if (!confirm(`Delete "${doc.name}" from DocMind AI?`)) return;
         del.disabled = true;
         try {
-          const res = await fetch(`${API_BASE}/api/documents/${doc.id}`, {method:"DELETE"});
-          const result = await res.json();
-          if (!res.ok) throw new Error(result.detail || "Delete failed.");
+          const res = await apiFetch(`/api/documents/${doc.id}`, {method:"DELETE"});
+          await readApiResponse(res);
           await loadDocuments();
         } catch (error) {
           alert(error.message);
@@ -163,8 +178,8 @@ async function loadDocuments() {
 async function checkStatus() {
   const status = $("status");
   try {
-    const response = await fetch(`${API_BASE}/api/status`);
-    const data = await response.json();
+    const response = await apiFetch("/api/status");
+    const data = await readApiResponse(response);
     if (!data.ollama_running) {
       status.textContent = "○ Ollama offline";
       status.className = "status offline";
@@ -193,9 +208,8 @@ $("fileInput").onchange = async event => {
       try {
         const form = new FormData();
         form.append("file", file);
-        const response = await fetch(`${API_BASE}/api/upload`, {method:"POST", body:form});
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || "Upload failed.");
+        const response = await apiFetch("/api/upload", {method:"POST", body:form});
+        const data = await readApiResponse(response);
         addMessage("assistant", `${data.message}\nPrepared ${data.passages} searchable passages.`);
       } catch (error) {
         alert(`${file.name}: ${error.message}`);
@@ -249,13 +263,12 @@ async function submitChat() {
   $("sendButton").disabled = true;
   $("sendButton").textContent = "Working…";
   try {
-    const response = await fetch(`${API_BASE}/api/chat`, {
+    const response = await apiFetch("/api/chat", {
       method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({question, mode:currentMode})
     });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "Could not get an answer.");
+    const data = await readApiResponse(response);
     addMessage("assistant", data.answer || "No answer was returned.");
     showSources(data.sources || []);
   } catch (error) {
@@ -277,9 +290,9 @@ $("question").addEventListener("keydown", event => {
 
 async function loadHistory() {
   try {
-    const response = await fetch(`${API_BASE}/api/history`);
+    const response = await apiFetch("/api/history");
     if (!response.ok) return;
-    const data = await response.json();
+    const data = await readApiResponse(response);
     const messages = data.messages || [];
     if (!messages.length) return;
     $("chatFeed").replaceChildren();
@@ -293,9 +306,16 @@ async function loadHistory() {
   }
 }
 
-loadDocuments();
-checkStatus();
-loadHistory();
+async function initializeApp() {
+  try {
+    await readApiResponse(await apiFetch("/api/session"));
+  } catch (error) {
+    console.error("Could not establish a private session:", error);
+  }
+  await Promise.all([loadDocuments(), checkStatus(), loadHistory()]);
+}
+
+initializeApp();
 </script>
 </body>
 </html>

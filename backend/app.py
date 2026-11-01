@@ -1,116 +1,164 @@
- """DocMind AI: a local-first document assistant powered by Ollama."""
+"""DocMind AI: a local-first document assistant powered by Ollama."""
 from __future__ import annotations
 
 import io
+import hashlib
+import logging
 import os
 import re
-import sqlite
+import secrets
+import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 
 import requests
 from docx import Document as WordDocument
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, Response
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
 
+logger = logging.getLogger("docmind")
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = Path(os.getenv("DOCMIND_DATA_DIR", str(BASE_DIR / "data"))).resolve()
 STATIC_DIR = BASE_DIR.parent / "frontend"
 DB_PATH = DATA_DIR / "docmind.db"
 INDEX_PATH = STATIC_DIR / "index.html"
 
+PORT = int(os.environ.get("PORT", 8000))
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 MODEL_NAME = os.getenv("MODEL_NAME", "qwen2.5:0.5b")
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 HF_INFERENCE_MODEL = os.getenv("HF_INFERENCE_MODEL", "Qwen/Qwen2.5-72B-Instruct")
+SESSION_COOKIE_NAME = "docmind_session"
+SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30
+SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
+INFERENCE_TIMEOUT_SECONDS = 45
+DEFAULT_FRONTEND_ORIGINS = (
+    "https://praveenkumarkunwar2007-hash.github.io,"
+    "https://docmind-y5n4.onrender.com,"
+    "http://localhost:8000,"
+    "http://127.0.0.1:8000"
+)
+ALLOWED_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("FRONTEND_ORIGINS", DEFAULT_FRONTEND_ORIGINS).split(",")
+    if origin.strip()
+]
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # 8 MiB per upload
 MAX_TEXT_CHARS = 200_000
 MAX_CONTEXT_CHARS = 6_000
 
-DATA_DIR.mkdir(exist_ok=True)
-MODEL_FILE = BASE_DIR / "qwen2.5_0.5b_model.pkl"
-HF_MODEL_REPO = os.getenv("HF_MODEL_REPO", "Praveen081/DocMind-Qwen-Model")
-
-def ensure_model_exists() -> None:
-    """Download the model checkpoint from Hugging Face Hub if not present locally."""
-    if not MODEL_FILE.exists():
-        try:
-            from huggingface_hub import hf_hub_download
-            print(f"Downloading model checkpoint from Hugging Face Hub ({HF_MODEL_REPO})...")
-            hf_hub_download(repo_id=HF_MODEL_REPO, filename="qwen2.5_0.5b_model.pkl", local_dir=str(BASE_DIR))
-            print("Model checkpoint ready.")
-        except Exception as exc:
-            print(f"Notice: Model checkpoint check skipped: {exc}")
-
-ensure_model_exists()
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title="DocMind AI", version="1.0.0")
 
-# -------------------------------------------------
-# Debug endpoints – diagnose provider config and connectivity. Remove before production.
-@app.get("/debug/token")
-def debug_token():
-    present = bool(HF_TOKEN)
-    length = len(HF_TOKEN) if present else 0
-    masked = (HF_TOKEN[:4] + "…" + HF_TOKEN[-4:]) if length > 8 else "***"
-    return {"HF_TOKEN_present": present, "HF_TOKEN_length": length, "HF_TOKEN_masked": masked if present else None}
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type"],
+)
 
 
-@app.get("/debug/providers")
-def debug_providers():
-    """Live-check all three AI providers and report their status."""
-    results: dict = {}
+def resolve_session_id(cookie_value: str) -> tuple[str, str]:
+    now = datetime.now().isoformat(timespec="seconds")
+    owner_id = ""
+    with connect_db() as db:
+        if SESSION_ID_PATTERN.fullmatch(cookie_value):
+            candidate = hashlib.sha256(cookie_value.encode("ascii")).hexdigest()
+            row = db.execute(
+                """SELECT session_hash FROM sessions
+                   WHERE session_hash = ?
+                     AND julianday(last_seen_at) >= julianday('now', '-30 days')""",
+                (candidate,),
+            ).fetchone()
+            if row is not None:
+                db.execute(
+                    "UPDATE sessions SET last_seen_at = ? WHERE session_hash = ?",
+                    (now, candidate),
+                )
+                return cookie_value, candidate
 
-    # HF Router quick probe
-    if HF_TOKEN:
-        token = HF_TOKEN.strip().strip("'").strip('"')
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        payload = {
-            "model": HF_INFERENCE_MODEL,
-            "messages": [{"role": "user", "content": "Hi"}],
-            "max_tokens": 5,
-        }
-        for url in ["https://router.huggingface.co/v1/chat/completions",
-                    "https://router.huggingface.co/hf-inference/v1/chat/completions"]:
+        while True:
+            session_token = secrets.token_urlsafe(32)
+            owner_id = hashlib.sha256(session_token.encode("ascii")).hexdigest()
             try:
-                r = requests.post(url, headers=headers, json=payload, timeout=15)
-                results[url] = {"status": r.status_code, "body_preview": r.text[:200]}
-                if r.status_code == 200:
-                    break
-            except Exception as exc:
-                results[url] = {"error": str(exc)}
-    else:
-        results["hf_router"] = "HF_TOKEN not set"
+                db.execute(
+                    "INSERT INTO sessions (session_hash, created_at, last_seen_at) VALUES (?, ?, ?)",
+                    (owner_id, now, now),
+                )
+                return session_token, owner_id
+            except sqlite3.IntegrityError:
+                continue
 
-    # Groq probe
-    if GROQ_API_KEY:
-        try:
-            r = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {GROQ_API_KEY.strip()}", "Content-Type": "application/json"},
-                json={"model": "llama-3.1-8b-instant", "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 5},
-                timeout=15,
-            )
-            results["groq"] = {"status": r.status_code, "body_preview": r.text[:200]}
-        except Exception as exc:
-            results["groq"] = {"error": str(exc)}
-    else:
-        results["groq"] = "GROQ_API_KEY not set"
 
-    # Ollama probe
-    try:
-        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=4)
-        results["ollama"] = {"status": r.status_code, "models": [m.get("name") for m in r.json().get("models", [])]}
-    except Exception as exc:
-        results["ollama"] = {"error": str(exc)}
+@app.middleware("http")
+async def session_cookie_middleware(request: Request, call_next):
+    origin = request.headers.get("origin")
+    request_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
+    if (
+        request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        and origin
+        and origin.rstrip("/") not in ALLOWED_ORIGINS
+        and origin.rstrip("/") != request_origin.rstrip("/")
+    ):
+        return JSONResponse(
+            status_code=403,
+            content={"success": False, "error": "This request origin is not allowed."},
+        )
 
-    return results
+    session_token = ""
+    if request.url.path.startswith("/api/"):
+        session_token, request.state.session_id = resolve_session_id(
+            request.cookies.get(SESSION_COOKIE_NAME, "")
+        )
 
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+    response = await call_next(request)
+    if session_token:
+        secure_cookie = request.url.scheme == "https" or os.getenv("RENDER", "").lower() == "true"
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=session_token,
+            max_age=SESSION_COOKIE_MAX_AGE,
+            httponly=True,
+            secure=secure_cookie,
+            samesite="none" if secure_cookie else "lax",
+            path="/",
+        )
+    return response
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"success": False, "error": str(exc.detail)},
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    logger.info("Invalid request for %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=422,
+        content={"success": False, "error": "Invalid request data."},
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled error for %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"success": False, "error": "Internal server error. Check the server logs."},
+    )
 
 
 def connect_db() -> sqlite3.Connection:
@@ -125,8 +173,15 @@ def initialize_database() -> None:
     with connect_db() as db:
         db.executescript(
             """
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_hash TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS documents (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id TEXT NOT NULL DEFAULT '',
                 name TEXT NOT NULL,
                 content TEXT NOT NULL,
                 uploaded_at TEXT NOT NULL
@@ -141,12 +196,25 @@ def initialize_database() -> None:
 
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id TEXT NOT NULL DEFAULT '',
                 mode TEXT NOT NULL,
                 question TEXT NOT NULL,
                 answer TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
             """
+        )
+        for table in ("documents", "messages"):
+            columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+            if "owner_id" not in columns:
+                db.execute(
+                    f"ALTER TABLE {table} ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''"
+                )
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS documents_owner_id_id ON documents(owner_id, id)"
+        )
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS messages_owner_id_id ON messages(owner_id, id)"
         )
 
 
@@ -214,11 +282,13 @@ def score_passage(query: str, passage: str) -> int:
     return sum(min(content.count(term), 5) for term in terms)
 
 
-def retrieve_passages(query: str, limit: int = 4) -> list[dict]:
+def retrieve_passages(query: str, owner_id: str, limit: int = 4) -> list[dict]:
     with connect_db() as db:
         rows = db.execute(
             """SELECT chunks.id, chunks.content, documents.id AS document_id, documents.name
-               FROM chunks JOIN documents ON documents.id = chunks.document_id"""
+               FROM chunks JOIN documents ON documents.id = chunks.document_id
+               WHERE documents.owner_id = ?""",
+            (owner_id,),
         ).fetchall()
 
     ranked: list[tuple[int, sqlite3.Row]] = []
@@ -239,235 +309,160 @@ def retrieve_passages(query: str, limit: int = 4) -> list[dict]:
     ]
 
 
-def list_documents() -> list[dict]:
+def list_documents(owner_id: str) -> list[dict]:
     with connect_db() as db:
         rows = db.execute(
             """SELECT id, name, uploaded_at, length(content) AS characters
-               FROM documents ORDER BY id DESC"""
+               FROM documents WHERE owner_id = ? ORDER BY id DESC""",
+            (owner_id,),
         ).fetchall()
     return [dict(row) for row in rows]
 
 
 def call_local_model(prompt: str) -> str:
-    """Call the AI model.
-    
-    1️⃣ Try Hugging Face Serverless Router (requires HF_TOKEN with `inference` scope).
-    2️⃣ If HF_TOKEN is missing or the router returns a non‑200 response, try Groq (requires GROQ_API_KEY).
-    3️⃣ Fallback to a local/remote Ollama instance (only works if you run Ollama yourself).
-    
-    If none of the providers are configured, we raise a clear HTTPException so the UI can display a useful message.
-    """
-    # -----------------------------------------------------------------
-    # 1️⃣ Hugging Face Router – only if a token is provided
-    # -----------------------------------------------------------------
-    if HF_TOKEN:
-        token = HF_TOKEN.strip().strip("'").strip('"')
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": HF_INFERENCE_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.2,
-            "max_tokens": 512,
-        }
-        for url in [
-            "https://router.huggingface.co/v1/chat/completions",
-            "https://router.huggingface.co/hf-inference/v1/chat/completions",
-        ]:
-            try:
-                res = requests.post(url, headers=headers, json=payload, timeout=45)
-                if res.status_code == 200:
-                    data = res.json()
-                    choices = data.get("choices", [])
-                    if choices:
-                        answer = choices[0].get("message", {}).get("content", "").strip()
-                        if answer:
-                            return answer
-                else:
-                    print(f"HF Router returned {res.status_code}: {res.text[:150]}")
-            except Exception as exc:
-                print(f"HF Router request error on {url}: {exc}")
-    # -----------------------------------------------------------------
-    # 2️⃣ Groq Cloud – fast fallback if configured
-    # -----------------------------------------------------------------
-    if GROQ_API_KEY:
-        try:
-            headers = {"Authorization": f"Bearer {GROQ_API_KEY.strip()}", "Content-Type": "application/json"}
-            payload = {
-                "model": "qwen-2.5-32b",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.2,
-                "max_tokens": 512,
-            }
-            res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=30)
-            if res.status_code == 200:
-                return res.json()["choices"][0]["message"]["content"].strip()
-            else:
-                print(f"Groq returned {res.status_code}: {res.text[:150]}")
-        except Exception as exc:
-            print(f"Groq error: {exc}")
-    # -----------------------------------------------------------------
-    # 3️⃣ Local/Ollama – only works if an Ollama daemon is reachable
-    # -----------------------------------------------------------------
-    try:
-        response = requests.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model": MODEL_NAME,
-                "prompt": prompt,
-                "stream": False,
-                "keep_alive": "2m",
-                "options": {
-                    "num_ctx": 2048,
-                    "num_predict": 300,
-                    "temperature": 0.2,
-                },
-            },
-            timeout=180,
-        )
-        if response.status_code == 200:
-            answer = response.json().get("response", "").strip()
-            if answer:
-                return answer
-        else:
-            print(f"Ollama returned {response.status_code}: {response.text[:150]}")
-    except Exception as exc:
-        print(f"Ollama request error: {exc}")
-    # -----------------------------------------------------------------
-    # If we reach here none of the providers succeeded.
-    # -----------------------------------------------------------------
-    raise HTTPException(
-        status_code=500,
-        detail="No inference provider succeeded. Ensure that either HF_TOKEN (with inference scope) or GROQ_API_KEY is set, or that an Ollama server is reachable.",
-    )
-    """Call the AI model (Hugging Face Router, Groq, or local Ollama)."""
-    failure_log: list[str] = []
+    """Try configured Hugging Face, Groq, and Ollama providers within a bounded time."""
+    failures: list[str] = []
+    deadline = time.monotonic() + INFERENCE_TIMEOUT_SECONDS
 
-    # 1. Hugging Face Serverless Router (OpenAI-compatible)
+    def request_timeout(maximum: float) -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Inference request deadline exceeded.")
+        return min(maximum, remaining)
+
     if HF_TOKEN:
         token = HF_TOKEN.strip().strip("'").strip('"')
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
-        # Try configured model first, then a reliable smaller fallback
-        hf_models = [HF_INFERENCE_MODEL]
+        models = [HF_INFERENCE_MODEL]
         if HF_INFERENCE_MODEL != "Qwen/Qwen2.5-7B-Instruct":
-            hf_models.append("Qwen/Qwen2.5-7B-Instruct")
+            models.append("Qwen/Qwen2.5-7B-Instruct")
 
-        for model in hf_models:
-            payload = {
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.2,
-                "max_tokens": 512,
-            }
-            for url in [
+        for model in models:
+            for url in (
                 "https://router.huggingface.co/v1/chat/completions",
                 "https://router.huggingface.co/hf-inference/v1/chat/completions",
-            ]:
+            ):
+                if time.monotonic() >= deadline:
+                    break
                 try:
-                    res = requests.post(url, headers=headers, json=payload, timeout=45)
-                    if res.status_code == 200:
-                        data = res.json()
-                        choices = data.get("choices", [])
+                    response = requests.post(
+                        url,
+                        headers=headers,
+                        json={
+                            "model": model,
+                            "messages": [{"role": "user", "content": prompt}],
+                            "temperature": 0.2,
+                            "max_tokens": 512,
+                        },
+                        timeout=request_timeout(20),
+                    )
+                    if response.status_code == 200:
+                        choices = response.json().get("choices", [])
                         if choices:
                             answer = choices[0].get("message", {}).get("content", "").strip()
                             if answer:
                                 return answer
-                        failure_log.append(f"HF Router ({model}): empty response body")
+                        failures.append(f"Hugging Face ({model}): empty response")
                     else:
-                        msg = res.text[:200].strip()
-                        failure_log.append(f"HF Router ({model}) HTTP {res.status_code}: {msg}")
-                        print(f"HF Router ({model}) returned {res.status_code}: {msg}")
-                        # 401/403 means the token is wrong — no point retrying other URLs with same creds
-                        if res.status_code in (401, 403):
+                        failures.append(f"Hugging Face ({model}) HTTP {response.status_code}")
+                        logger.warning(
+                            "Hugging Face returned HTTP %s: %s",
+                            response.status_code,
+                            response.text[:200],
+                        )
+                        if response.status_code in (401, 403):
                             break
-                except Exception as exc:
-                    failure_log.append(f"HF Router ({model}) error: {exc}")
-                    print(f"HF Router request error on {url}: {exc}")
+                except (requests.RequestException, ValueError, KeyError, IndexError, TimeoutError) as exc:
+                    failures.append(f"Hugging Face ({model}): {type(exc).__name__}")
+                    logger.warning("Hugging Face request failed: %s", exc, exc_info=True)
 
-    # 2. Groq Cloud API (fast fallback if configured)
-    if GROQ_API_KEY:
-        groq_models = ["llama-3.1-8b-instant", "llama3-8b-8192", "gemma2-9b-it"]
+    if GROQ_API_KEY and time.monotonic() < deadline:
+        groq_key = GROQ_API_KEY.strip().strip("'").strip('"')
         headers = {
-            "Authorization": f"Bearer {GROQ_API_KEY.strip()}",
+            "Authorization": f"Bearer {groq_key}",
             "Content-Type": "application/json",
         }
-        for model in groq_models:
+        for model in ("llama-3.1-8b-instant", "llama3-8b-8192", "gemma2-9b-it"):
+            if time.monotonic() >= deadline:
+                break
             try:
-                payload = {
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.2,
-                    "max_tokens": 512,
-                }
-                res = requests.post(
+                response = requests.post(
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers=headers,
-                    json=payload,
-                    timeout=30,
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.2,
+                        "max_tokens": 512,
+                    },
+                    timeout=request_timeout(15),
                 )
-                if res.status_code == 200:
-                    answer = res.json()["choices"][0]["message"]["content"].strip()
+                if response.status_code == 200:
+                    answer = response.json()["choices"][0]["message"]["content"].strip()
                     if answer:
                         return answer
-                    failure_log.append(f"Groq ({model}): empty response")
+                    failures.append(f"Groq ({model}): empty response")
                 else:
-                    msg = res.text[:200].strip()
-                    failure_log.append(f"Groq ({model}) HTTP {res.status_code}: {msg}")
-                    print(f"Groq ({model}) returned {res.status_code}: {msg}")
-                    if res.status_code in (401, 403):
-                        break  # bad key — skip remaining models
-            except Exception as exc:
-                failure_log.append(f"Groq ({model}) error: {exc}")
-                print(f"Groq error ({model}): {exc}")
+                    failures.append(f"Groq ({model}) HTTP {response.status_code}")
+                    logger.warning(
+                        "Groq returned HTTP %s: %s",
+                        response.status_code,
+                        response.text[:200],
+                    )
+                    if response.status_code in (401, 403):
+                        break
+            except (requests.RequestException, ValueError, KeyError, IndexError, TimeoutError) as exc:
+                failures.append(f"Groq ({model}): {type(exc).__name__}")
+                logger.warning("Groq request failed: %s", exc, exc_info=True)
 
-    # 3. Local or tunneled Ollama
-    try:
-        response = requests.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model": MODEL_NAME,
-                "prompt": prompt,
-                "stream": False,
-                "keep_alive": "2m",
-                "options": {
-                    "num_ctx": 2048,
-                    "num_predict": 300,
-                    "temperature": 0.2,
+    if time.monotonic() < deadline:
+        try:
+            response = requests.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={
+                    "model": MODEL_NAME,
+                    "prompt": prompt,
+                    "stream": False,
+                    "keep_alive": "2m",
+                    "options": {
+                        "num_ctx": 2048,
+                        "num_predict": 300,
+                        "temperature": 0.2,
+                    },
                 },
-            },
-            timeout=180,
-        )
-        if response.status_code == 200:
-            answer = response.json().get("response", "").strip()
-            if answer:
-                return answer
-            failure_log.append("Ollama: empty response")
-        else:
-            failure_log.append(f"Ollama HTTP {response.status_code}: {response.text[:200]}")
-    except Exception as exc:
-        failure_log.append(f"Ollama error: {exc}")
-        print(f"Local Ollama error: {exc}")
+                timeout=request_timeout(30),
+            )
+            if response.status_code == 200:
+                answer = response.json().get("response", "").strip()
+                if answer:
+                    return answer
+                failures.append("Ollama: empty response")
+            else:
+                failures.append(f"Ollama HTTP {response.status_code}")
+                logger.warning(
+                    "Ollama returned HTTP %s: %s",
+                    response.status_code,
+                    response.text[:200],
+                )
+        except (requests.RequestException, ValueError, TimeoutError) as exc:
+            failures.append(f"Ollama: {type(exc).__name__}")
+            logger.warning("Ollama request failed: %s", exc, exc_info=True)
 
-    # Build a diagnostic summary for the response
-    summary = " | ".join(failure_log) if failure_log else "All providers tried with no result."
-    print(f"call_local_model failed — {summary}")
-
+    logger.error("No inference provider succeeded: %s", "; ".join(failures) or "deadline exceeded")
     if not HF_TOKEN and not GROQ_API_KEY:
         raise HTTPException(
             status_code=503,
             detail=(
-                "No AI provider is configured. "
-                "Set HF_TOKEN (Hugging Face) or GROQ_API_KEY (Groq) in your Render environment variables."
+                "No AI provider is available. Configure HF_TOKEN or GROQ_API_KEY on Render, "
+                "or set OLLAMA_URL to a reachable Ollama server."
             ),
         )
     raise HTTPException(
-        status_code=502,
-        detail=f"AI service unavailable. Diagnosis: {summary}",
+        status_code=503,
+        detail="AI providers are unavailable. Check the backend logs and provider configuration.",
     )
 
 
@@ -479,6 +474,16 @@ class ChatInput(BaseModel):
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon() -> Response:
     return Response(status_code=204)
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok"}
+
+
+@app.get("/api/session")
+def session() -> dict:
+    return {"success": True}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -512,12 +517,12 @@ def status() -> dict:
 
 
 @app.get("/api/documents")
-def get_documents() -> dict:
-    return {"documents": list_documents()}
+def get_documents(request: Request) -> dict:
+    return {"documents": list_documents(request.state.session_id)}
 
 
 @app.post("/api/upload")
-async def upload_document(file: UploadFile = File(...)) -> dict:
+async def upload_document(request: Request, file: UploadFile = File(...)) -> dict:
     # Use only the basename so a supplied filename cannot specify a path.
     filename = Path((file.filename or "document").replace("\\", "/")).name
     allowed = {".pdf", ".docx", ".txt", ".md"}
@@ -533,8 +538,8 @@ async def upload_document(file: UploadFile = File(...)) -> dict:
     passages = split_text(text)
     with connect_db() as db:
         cursor = db.execute(
-            "INSERT INTO documents (name, content, uploaded_at) VALUES (?, ?, ?)",
-            (filename, text, datetime.now().isoformat(timespec="seconds")),
+            "INSERT INTO documents (owner_id, name, content, uploaded_at) VALUES (?, ?, ?, ?)",
+            (request.state.session_id, filename, text, datetime.now().isoformat(timespec="seconds")),
         )
         document_id = cursor.lastrowid
         db.executemany(
@@ -545,32 +550,37 @@ async def upload_document(file: UploadFile = File(...)) -> dict:
 
 
 @app.delete("/api/documents/{document_id}")
-def delete_document(document_id: int) -> dict:
+def delete_document(document_id: int, request: Request) -> dict:
     with connect_db() as db:
-        cursor = db.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+        cursor = db.execute(
+            "DELETE FROM documents WHERE id = ? AND owner_id = ?",
+            (document_id, request.state.session_id),
+        )
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Document not found.")
     return {"message": "Document deleted."}
 
 
 @app.get("/api/history")
-def get_history() -> dict:
+def get_history(request: Request) -> dict:
     with connect_db() as db:
         rows = db.execute(
             """SELECT mode, question, answer, created_at
-               FROM messages ORDER BY id DESC LIMIT 30"""
+               FROM messages WHERE owner_id = ? ORDER BY id DESC LIMIT 30""",
+            (request.state.session_id,),
         ).fetchall()
     return {"messages": [dict(row) for row in reversed(rows)]}
 
 
 @app.post("/api/chat")
-def chat(data: ChatInput) -> dict:
+def chat(data: ChatInput, request: Request) -> dict:
+    owner_id = request.state.session_id
     mode = data.mode.lower().strip()
     question = data.question.strip()
     if mode not in {"ask", "summarize", "compare"}:
         raise HTTPException(status_code=400, detail="Unknown chat mode.")
 
-    documents = list_documents()
+    documents = list_documents(owner_id)
     if not documents:
         return {"answer": "Upload a document first, then ask me about its contents.", "sources": [], "mode": mode}
 
@@ -580,7 +590,7 @@ def chat(data: ChatInput) -> dict:
     if mode == "ask":
         if not question:
             raise HTTPException(status_code=400, detail="Enter a question about your documents.")
-        sources = retrieve_passages(question, limit=4)
+        sources = retrieve_passages(question, owner_id, limit=4)
         if not sources:
             return {
                 "answer": "I couldn't find a matching passage in your uploaded documents. Try terms that appear in the document.",
@@ -602,7 +612,10 @@ def chat(data: ChatInput) -> dict:
         selected_docs = sorted(documents[:3], key=lambda item: item["id"])
         with connect_db() as db:
             for index, doc in enumerate(selected_docs, start=1):
-                row = db.execute("SELECT content FROM documents WHERE id = ?", (doc["id"],)).fetchone()
+                row = db.execute(
+                    "SELECT content FROM documents WHERE id = ? AND owner_id = ?",
+                    (doc["id"], owner_id),
+                ).fetchone()
                 if row is None:
                     continue
                 content = row["content"][:MAX_CONTEXT_CHARS // max(1, len(selected_docs))]
@@ -629,8 +642,14 @@ def chat(data: ChatInput) -> dict:
 
     with connect_db() as db:
         db.execute(
-            "INSERT INTO messages (mode, question, answer, created_at) VALUES (?, ?, ?, ?)",
-            (mode, question or mode.title(), answer, datetime.now().isoformat(timespec="seconds")),
+            "INSERT INTO messages (owner_id, mode, question, answer, created_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                owner_id,
+                mode,
+                question or mode.title(),
+                answer,
+                datetime.now().isoformat(timespec="seconds"),
+            ),
         )
 
     return {

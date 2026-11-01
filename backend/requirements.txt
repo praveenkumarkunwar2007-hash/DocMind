@@ -4,4 +4,3 @@ python-multipart>=0.0.9
 pypdf>=5.0
 python-docx>=1.1
 requests>=2.31
-huggingface_hub
