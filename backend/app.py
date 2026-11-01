@@ -1,10 +1,10 @@
-"""DocMind AI: a local-first document assistant powered by Ollama."""
+ """DocMind AI: a local-first document assistant powered by Ollama."""
 from __future__ import annotations
 
 import io
 import os
 import re
-import sqlite3
+import sqlite
 from datetime import datetime
 from pathlib import Path
 
@@ -48,6 +48,67 @@ def ensure_model_exists() -> None:
 
 ensure_model_exists()
 app = FastAPI(title="DocMind AI", version="1.0.0")
+
+# -------------------------------------------------
+# Debug endpoints – diagnose provider config and connectivity. Remove before production.
+@app.get("/debug/token")
+def debug_token():
+    present = bool(HF_TOKEN)
+    length = len(HF_TOKEN) if present else 0
+    masked = (HF_TOKEN[:4] + "…" + HF_TOKEN[-4:]) if length > 8 else "***"
+    return {"HF_TOKEN_present": present, "HF_TOKEN_length": length, "HF_TOKEN_masked": masked if present else None}
+
+
+@app.get("/debug/providers")
+def debug_providers():
+    """Live-check all three AI providers and report their status."""
+    results: dict = {}
+
+    # HF Router quick probe
+    if HF_TOKEN:
+        token = HF_TOKEN.strip().strip("'").strip('"')
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        payload = {
+            "model": HF_INFERENCE_MODEL,
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 5,
+        }
+        for url in ["https://router.huggingface.co/v1/chat/completions",
+                    "https://router.huggingface.co/hf-inference/v1/chat/completions"]:
+            try:
+                r = requests.post(url, headers=headers, json=payload, timeout=15)
+                results[url] = {"status": r.status_code, "body_preview": r.text[:200]}
+                if r.status_code == 200:
+                    break
+            except Exception as exc:
+                results[url] = {"error": str(exc)}
+    else:
+        results["hf_router"] = "HF_TOKEN not set"
+
+    # Groq probe
+    if GROQ_API_KEY:
+        try:
+            r = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {GROQ_API_KEY.strip()}", "Content-Type": "application/json"},
+                json={"model": "llama-3.1-8b-instant", "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 5},
+                timeout=15,
+            )
+            results["groq"] = {"status": r.status_code, "body_preview": r.text[:200]}
+        except Exception as exc:
+            results["groq"] = {"error": str(exc)}
+    else:
+        results["groq"] = "GROQ_API_KEY not set"
+
+    # Ollama probe
+    try:
+        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=4)
+        results["ollama"] = {"status": r.status_code, "models": [m.get("name") for m in r.json().get("models", [])]}
+    except Exception as exc:
+        results["ollama"] = {"error": str(exc)}
+
+    return results
+
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -188,13 +249,22 @@ def list_documents() -> list[dict]:
 
 
 def call_local_model(prompt: str) -> str:
-    """Call the AI model (Hugging Face Router, Groq, or local Ollama)."""
-    # 1. Hugging Face Serverless Router (OpenAI-compatible)
+    """Call the AI model.
+    
+    1️⃣ Try Hugging Face Serverless Router (requires HF_TOKEN with `inference` scope).
+    2️⃣ If HF_TOKEN is missing or the router returns a non‑200 response, try Groq (requires GROQ_API_KEY).
+    3️⃣ Fallback to a local/remote Ollama instance (only works if you run Ollama yourself).
+    
+    If none of the providers are configured, we raise a clear HTTPException so the UI can display a useful message.
+    """
+    # -----------------------------------------------------------------
+    # 1️⃣ Hugging Face Router – only if a token is provided
+    # -----------------------------------------------------------------
     if HF_TOKEN:
         token = HF_TOKEN.strip().strip("'").strip('"')
         headers = {
             "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
         payload = {
             "model": HF_INFERENCE_MODEL,
@@ -219,8 +289,9 @@ def call_local_model(prompt: str) -> str:
                     print(f"HF Router returned {res.status_code}: {res.text[:150]}")
             except Exception as exc:
                 print(f"HF Router request error on {url}: {exc}")
-
-    # 2. Groq Cloud API (Fast fallback if configured)
+    # -----------------------------------------------------------------
+    # 2️⃣ Groq Cloud – fast fallback if configured
+    # -----------------------------------------------------------------
     if GROQ_API_KEY:
         try:
             headers = {"Authorization": f"Bearer {GROQ_API_KEY.strip()}", "Content-Type": "application/json"}
@@ -233,10 +304,13 @@ def call_local_model(prompt: str) -> str:
             res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=30)
             if res.status_code == 200:
                 return res.json()["choices"][0]["message"]["content"].strip()
+            else:
+                print(f"Groq returned {res.status_code}: {res.text[:150]}")
         except Exception as exc:
             print(f"Groq error: {exc}")
-
-    # 3. Local or Tunneled Ollama
+    # -----------------------------------------------------------------
+    # 3️⃣ Local/Ollama – only works if an Ollama daemon is reachable
+    # -----------------------------------------------------------------
     try:
         response = requests.post(
             f"{OLLAMA_URL}/api/generate",
@@ -257,18 +331,143 @@ def call_local_model(prompt: str) -> str:
             answer = response.json().get("response", "").strip()
             if answer:
                 return answer
+        else:
+            print(f"Ollama returned {response.status_code}: {response.text[:150]}")
     except Exception as exc:
+        print(f"Ollama request error: {exc}")
+    # -----------------------------------------------------------------
+    # If we reach here none of the providers succeeded.
+    # -----------------------------------------------------------------
+    raise HTTPException(
+        status_code=500,
+        detail="No inference provider succeeded. Ensure that either HF_TOKEN (with inference scope) or GROQ_API_KEY is set, or that an Ollama server is reachable.",
+    )
+    """Call the AI model (Hugging Face Router, Groq, or local Ollama)."""
+    failure_log: list[str] = []
+
+    # 1. Hugging Face Serverless Router (OpenAI-compatible)
+    if HF_TOKEN:
+        token = HF_TOKEN.strip().strip("'").strip('"')
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        # Try configured model first, then a reliable smaller fallback
+        hf_models = [HF_INFERENCE_MODEL]
+        if HF_INFERENCE_MODEL != "Qwen/Qwen2.5-7B-Instruct":
+            hf_models.append("Qwen/Qwen2.5-7B-Instruct")
+
+        for model in hf_models:
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2,
+                "max_tokens": 512,
+            }
+            for url in [
+                "https://router.huggingface.co/v1/chat/completions",
+                "https://router.huggingface.co/hf-inference/v1/chat/completions",
+            ]:
+                try:
+                    res = requests.post(url, headers=headers, json=payload, timeout=45)
+                    if res.status_code == 200:
+                        data = res.json()
+                        choices = data.get("choices", [])
+                        if choices:
+                            answer = choices[0].get("message", {}).get("content", "").strip()
+                            if answer:
+                                return answer
+                        failure_log.append(f"HF Router ({model}): empty response body")
+                    else:
+                        msg = res.text[:200].strip()
+                        failure_log.append(f"HF Router ({model}) HTTP {res.status_code}: {msg}")
+                        print(f"HF Router ({model}) returned {res.status_code}: {msg}")
+                        # 401/403 means the token is wrong — no point retrying other URLs with same creds
+                        if res.status_code in (401, 403):
+                            break
+                except Exception as exc:
+                    failure_log.append(f"HF Router ({model}) error: {exc}")
+                    print(f"HF Router request error on {url}: {exc}")
+
+    # 2. Groq Cloud API (fast fallback if configured)
+    if GROQ_API_KEY:
+        groq_models = ["llama-3.1-8b-instant", "llama3-8b-8192", "gemma2-9b-it"]
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY.strip()}",
+            "Content-Type": "application/json",
+        }
+        for model in groq_models:
+            try:
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.2,
+                    "max_tokens": 512,
+                }
+                res = requests.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=30,
+                )
+                if res.status_code == 200:
+                    answer = res.json()["choices"][0]["message"]["content"].strip()
+                    if answer:
+                        return answer
+                    failure_log.append(f"Groq ({model}): empty response")
+                else:
+                    msg = res.text[:200].strip()
+                    failure_log.append(f"Groq ({model}) HTTP {res.status_code}: {msg}")
+                    print(f"Groq ({model}) returned {res.status_code}: {msg}")
+                    if res.status_code in (401, 403):
+                        break  # bad key — skip remaining models
+            except Exception as exc:
+                failure_log.append(f"Groq ({model}) error: {exc}")
+                print(f"Groq error ({model}): {exc}")
+
+    # 3. Local or tunneled Ollama
+    try:
+        response = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={
+                "model": MODEL_NAME,
+                "prompt": prompt,
+                "stream": False,
+                "keep_alive": "2m",
+                "options": {
+                    "num_ctx": 2048,
+                    "num_predict": 300,
+                    "temperature": 0.2,
+                },
+            },
+            timeout=180,
+        )
+        if response.status_code == 200:
+            answer = response.json().get("response", "").strip()
+            if answer:
+                return answer
+            failure_log.append("Ollama: empty response")
+        else:
+            failure_log.append(f"Ollama HTTP {response.status_code}: {response.text[:200]}")
+    except Exception as exc:
+        failure_log.append(f"Ollama error: {exc}")
         print(f"Local Ollama error: {exc}")
 
-    # Clear error message for the user:
+    # Build a diagnostic summary for the response
+    summary = " | ".join(failure_log) if failure_log else "All providers tried with no result."
+    print(f"call_local_model failed — {summary}")
+
     if not HF_TOKEN and not GROQ_API_KEY:
         raise HTTPException(
             status_code=503,
-            detail="AI inference engine is not connected. Add HF_TOKEN in your Render Environment Variables.",
+            detail=(
+                "No AI provider is configured. "
+                "Set HF_TOKEN (Hugging Face) or GROQ_API_KEY (Groq) in your Render environment variables."
+            ),
         )
     raise HTTPException(
         status_code=502,
-        detail="AI service did not return an answer. Please verify your HF_TOKEN has 'Inference' permission in Hugging Face settings.",
+        detail=f"AI service unavailable. Diagnosis: {summary}",
     )
 
 

@@ -54,6 +54,14 @@ DocMind AI is a local-first, privacy-focused document assistant powered by FastA
 
 ---
 
+## GitHub Pages
+
+The frontend is deployed from `frontend/` by the GitHub Actions workflow whenever changes are pushed to `main`. In the repository settings, open **Settings → Pages** and set **Build and deployment → Source** to **GitHub Actions**. The first deployment publishes the site at `https://praveenkumarkunwar2007-hash.github.io/DocMind/`.
+
+GitHub Pages hosts only the static frontend; document and chat API requests use the backend at `https://docmind-y5n4.onrender.com`. The backend downloads `qwen2.5_0.5b_model.pkl` from [`Praveen081/DocMind-Qwen-Model`](https://huggingface.co/Praveen081/DocMind-Qwen-Model) when the file is absent. Chat inference is performed separately by Ollama; the checkpoint download does not start Ollama or provide inference. To enable chat on Render, configure `OLLAMA_URL` to a reachable Ollama server and ensure `MODEL_NAME` is installed there (the default is `qwen2.5:0.5b`). Set `DOCMIND_API_URL` in the browser's local storage to override the frontend API URL, or set `HF_MODEL_REPO` on the backend to override the checkpoint repository.
+
+---
+
 ## Repository & Git LFS Notes
 
 This repository contains large model files such as `backend/qwen2.5_0.5b_model.pkl` (~1.84 GB).
