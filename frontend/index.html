@@ -47,10 +47,10 @@
   <aside class="sources-panel"><div class="panel-heading"><div class="panel-heading-icon">▤</div><span>Sources &amp; references</span></div><div class="panel-desc">Explore the document passages associated with your latest response.</div><div class="source-count">Retrieved passages</div><div id="sourceList" class="source-list"><div class="empty">Source passages will appear here after you ask a question.</div></div><div class="source-note"><strong>About sources</strong><br>These excerpts show the passages provided to the local AI. They are not independent verification that every generated claim is correct.</div></aside>
 </div>
 <script>
-// Backend API URL: Relative path when run locally, or your Hugging Face Space URL when hosted on Render:
-const API_BASE = (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost")
+// Use the local API in development and the Render API when hosted as a static site.
+const API_BASE = (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost" || window.location.hostname.includes("onrender.com"))
   ? ""
-  : (localStorage.getItem("DOCMIND_API_URL") || "https://praveenkumarkunwar2007-hash-docmind.hf.space");
+  : (localStorage.getItem("DOCMIND_API_URL") || "https://docmind-y5n4.onrender.com");
 
 const $ = id => document.getElementById(id);
 let currentMode = "ask";
