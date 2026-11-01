@@ -47,6 +47,11 @@
   <aside class="sources-panel"><div class="panel-heading"><div class="panel-heading-icon">▤</div><span>Sources &amp; references</span></div><div class="panel-desc">Explore the document passages associated with your latest response.</div><div class="source-count">Retrieved passages</div><div id="sourceList" class="source-list"><div class="empty">Source passages will appear here after you ask a question.</div></div><div class="source-note"><strong>About sources</strong><br>These excerpts show the passages provided to the local AI. They are not independent verification that every generated claim is correct.</div></aside>
 </div>
 <script>
+// Backend API URL: Relative path when run locally, or your Hugging Face Space URL when hosted on Render:
+const API_BASE = (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost")
+  ? ""
+  : (localStorage.getItem("DOCMIND_API_URL") || "https://praveenkumarkunwar2007-hash-docmind.hf.space");
+
 const $ = id => document.getElementById(id);
 let currentMode = "ask";
 let busy = false;
@@ -94,7 +99,7 @@ function showSources(sources) {
 
 async function loadDocuments() {
   try {
-    const response = await fetch("/api/documents");
+    const response = await fetch(`${API_BASE}/api/documents`);
     if (!response.ok) throw new Error("Library request failed.");
     const data = await response.json();
     const area = $("docList");
@@ -133,7 +138,7 @@ async function loadDocuments() {
         if (!confirm(`Delete "${doc.name}" from DocMind AI?`)) return;
         del.disabled = true;
         try {
-          const res = await fetch(`/api/documents/${doc.id}`, {method:"DELETE"});
+          const res = await fetch(`${API_BASE}/api/documents/${doc.id}`, {method:"DELETE"});
           const result = await res.json();
           if (!res.ok) throw new Error(result.detail || "Delete failed.");
           await loadDocuments();
@@ -158,7 +163,7 @@ async function loadDocuments() {
 async function checkStatus() {
   const status = $("status");
   try {
-    const response = await fetch("/api/status");
+    const response = await fetch(`${API_BASE}/api/status`);
     const data = await response.json();
     if (!data.ollama_running) {
       status.textContent = "○ Ollama offline";
@@ -188,7 +193,7 @@ $("fileInput").onchange = async event => {
       try {
         const form = new FormData();
         form.append("file", file);
-        const response = await fetch("/api/upload", {method:"POST", body:form});
+        const response = await fetch(`${API_BASE}/api/upload`, {method:"POST", body:form});
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || "Upload failed.");
         addMessage("assistant", `${data.message}\nPrepared ${data.passages} searchable passages.`);
@@ -244,7 +249,7 @@ async function submitChat() {
   $("sendButton").disabled = true;
   $("sendButton").textContent = "Working…";
   try {
-    const response = await fetch("/api/chat", {
+    const response = await fetch(`${API_BASE}/api/chat`, {
       method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({question, mode:currentMode})
@@ -272,7 +277,7 @@ $("question").addEventListener("keydown", event => {
 
 async function loadHistory() {
   try {
-    const response = await fetch("/api/history");
+    const response = await fetch(`${API_BASE}/api/history`);
     if (!response.ok) return;
     const data = await response.json();
     const messages = data.messages || [];
