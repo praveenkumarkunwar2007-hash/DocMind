@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#f7f9fe">
+<meta name="theme-color" content="#f7f9fe"><meta name="description" content="Ask questions, summarize, and compare your documents in a private, session-isolated workspace.">
 <title>DocMind AI | Your Private Knowledge Space</title>
 <style>
 :root{--navy:#172747;--ink:#25334d;--muted:#7b879d;--blue:#4d6ff2;--violet:#8a64e9;--bg:#f6f8fc;--paper:#fff;--line:#e7ebf3;--green:#20845b;--shadow:0 12px 36px rgba(31,48,91,.055)}
@@ -17,7 +17,7 @@
 .mode-area{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:23px 0 13px}.mode-label{color:#6e7b92;font-size:11px;font-weight:800}.mode-row{display:flex;flex-wrap:wrap;gap:7px}.mode-button{min-height:37px;padding:8px 12px;border:1px solid #e2e7f0;border-radius:10px;background:#fff;color:#65718a;font-size:10px;font-weight:750;transition:all .18s}.mode-button:hover{border-color:#cbd6ff}.mode-button.active{color:#3f5ed7;border-color:#cbd5ff;background:#eef2ff}.chat-feed{display:grid;align-content:start;gap:13px;min-height:105px;padding:5px 0 19px}.message{max-width:100%;padding:15px 17px;border:1px solid var(--line);border-radius:14px;background:#fff;box-shadow:0 4px 13px rgba(30,45,79,.025)}.message.user{margin-left:9%;border-color:#dce4ff;background:#edf1ff;box-shadow:none}.message-label{display:flex;align-items:center;gap:7px;margin-bottom:7px;color:#77839a;font-size:9px;font-weight:850;letter-spacing:.8px;text-transform:uppercase}.message.assistant .message-label{color:#5c63ba}.message-body{color:#46546d;font-size:12px;line-height:1.85;white-space:pre-wrap;overflow-wrap:anywhere}.message.user .message-body{color:#35486e}
 .composer{position:sticky;bottom:0;z-index:5;padding:15px 26px 17px;background:linear-gradient(to bottom,rgba(246,248,252,0),var(--bg) 22%)}.composer-inner{max-width:900px;margin:0 auto;padding:12px 13px 10px;border:1px solid #dfe5f0;border-radius:16px;background:#fff;box-shadow:0 9px 32px rgba(30,45,79,.065);transition:border-color .18s,box-shadow .18s}.composer-inner:focus-within{border-color:#c1ccfb;box-shadow:0 9px 32px rgba(66,91,191,.085)}#question{display:block;width:100%;min-height:59px;max-height:160px;resize:vertical;padding:7px 8px;border:0;outline:0;background:transparent;color:var(--ink);font-size:12px;line-height:1.7}#question::placeholder{color:#9ba5b7}.composer-bottom{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 4px 0}.hint{color:#929caf;font-size:9px;line-height:1.5}.send{flex:0 0 auto;min-height:36px;padding:9px 16px;border:0;border-radius:10px;background:linear-gradient(110deg,var(--blue),var(--violet));color:white;font-size:11px;font-weight:800;box-shadow:0 5px 12px rgba(92,93,222,.19);transition:opacity .18s,transform .18s}.send:hover{transform:translateY(-1px)}.send:disabled{opacity:.55;cursor:wait;transform:none}.footer{padding:0 15px 12px;color:#9ba5b6;font-size:9px;text-align:center}
 .sources-panel{min-width:0;padding:26px 17px;border-left:1px solid var(--line);background:#fff}.panel-heading{display:flex;align-items:center;gap:9px;color:var(--navy);font-size:14px;font-weight:800}.panel-heading-icon{display:grid;place-items:center;width:31px;height:31px;border-radius:10px;background:#f0edff;color:#795bd8;font-weight:900}.panel-desc{margin:10px 0 20px;color:#8590a5;font-size:10px;line-height:1.8}.source-count{margin:20px 0 10px;color:#8a95a9;font-size:10px;font-weight:800;letter-spacing:.8px;text-transform:uppercase}.source-list{display:grid;gap:10px}.source-card{min-width:0;padding:12px;border:1px solid #e7eaf2;border-radius:12px;background:#fff;transition:border-color .18s}.source-card:hover{border-color:#ccd6fc}.source-tag{display:inline-block;margin-bottom:9px;padding:4px 6px;border-radius:6px;background:#f0edff;color:#7053ca;font-size:9px;font-weight:800}.source-title{margin-bottom:8px;color:#37435b;font-size:11px;font-weight:800;line-height:1.5;overflow-wrap:anywhere}.source-snippet{color:#738098;font-size:10px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}.source-note{margin-top:22px;padding:12px;border-radius:11px;background:#f7f8fc;color:#8a94a8;font-size:10px;line-height:1.75}
-@media(max-width:1180px){.app{grid-template-columns:220px minmax(0,1fr)}.sources-panel{grid-column:1/-1;border-left:0;border-top:1px solid var(--line);padding:20px 23px}.source-list{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}.source-note{margin-top:14px}.privacy-card{margin-top:26px}}
+@media(max-width:1180px){.app{grid-template-columns:220px minmax(0,1fr)}.sources-panel{grid-column:1/-1;border-left:0;border-top:1px solid var(--line);padding:20px 23px}.source-list{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}.source-note{margin-top:14px}.privacy-card{margin-top:26px}}@media(min-width:701px) and (max-width:900px){.app{grid-template-columns:190px minmax(0,1fr)}.sidebar{padding:20px 12px}.topbar{padding:14px 18px}.content{padding:25px 20px 18px}.mode-area{align-items:flex-start;flex-direction:column}.mode-row{width:100%}.mode-button{flex:1 1 auto}}
 @media(max-width:700px){body{font-size:13px}.app{display:flex;flex-direction:column;min-height:100vh}.sidebar{padding:14px 15px 13px;border-right:0;border-bottom:1px solid var(--line)}.brand{font-size:18px}.logo{width:36px;height:36px;flex-basis:36px;border-radius:12px}.tagline{margin:5px 0 13px 2px;font-size:10px}.upload{padding:12px;min-height:43px}.section-head{margin:15px 1px 9px}.doc-list{display:flex;gap:8px;overflow-x:auto;padding:1px 1px 5px;scrollbar-width:thin}.doc-item{flex:0 0 190px;max-width:75vw}.privacy-card{margin-top:10px;padding:9px 11px}.topbar{min-height:65px;padding:12px 15px}.eyebrow{font-size:8px;letter-spacing:.8px}.top-title{font-size:14px}.status{padding:7px 8px;font-size:9px}.content{padding:17px 14px 9px}.welcome{margin-bottom:19px;padding:22px 18px;border-radius:15px}.welcome h1{font-size:30px;letter-spacing:-1px}.welcome p{font-size:11px}.welcome-foot{gap:6px;margin-top:14px}.info-pill{font-size:9px;padding:5px 7px}.mode-area{display:block;margin:19px 0 13px}.mode-label{display:block;margin-bottom:9px}.mode-row{display:grid;grid-template-columns:1fr 1fr;gap:7px}.mode-button{min-height:40px;padding:8px 7px;font-size:10px}.mode-button:last-child{grid-column:1/-1}.chat-feed{gap:10px;padding-bottom:13px}.message{padding:12px 13px;border-radius:12px}.message.user{margin-left:3%}.message-body{font-size:12px}.composer{position:static;padding:9px 12px 12px}.composer-inner{border-radius:13px;padding:9px 10px 8px}#question{min-height:62px;font-size:12px}.composer-bottom{padding:4px 2px 0}.hint{max-width:58%}.send{min-height:39px;padding:10px 14px}.sources-panel{padding:20px 15px;border-top:1px solid var(--line)}.source-list{grid-template-columns:1fr}.panel-desc{margin-bottom:13px}.source-note{margin-top:13px}.footer{padding:3px 12px 13px}}
 @media(max-width:360px){.topbar{align-items:flex-start}.status{max-width:120px;white-space:normal;text-align:center}.welcome h1{font-size:26px}.mode-button{font-size:9px}.hint{font-size:8px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important}}
@@ -28,23 +28,23 @@
   <aside class="sidebar">
     <div class="brand"><div class="logo">D</div><span>DocMind <span class="brand-ai">AI</span></span></div>
     <p class="tagline">Think Deeper. With Your Documents.</p>
-    <button class="upload" id="uploadButton" type="button">＋ &nbsp; Add documents</button>
-    <input id="fileInput" type="file" accept=".pdf,.docx,.txt,.md" multiple>
-    <div class="section-head"><span>Your library</span><span id="docCount" class="count">0</span></div>
+    <button class="upload" id="uploadButton" type="button" aria-label="Add PDF, DOCX, text, or Markdown documents">＋ &nbsp; Add documents</button>
+    <input id="fileInput" type="file" accept=".pdf,.docx,.txt,.md" multiple aria-label="Choose documents to upload">
+    <div class="section-head"><span>Your library</span><span id="docCount" class="count" aria-label="Document count">0</span></div>
     <div id="docList" class="doc-list"><div class="empty">Your documents will appear here.</div></div>
-    <div class="privacy-card"><div class="privacy-title">◇ &nbsp; Private workspace</div>Your documents and conversations are stored locally. AI responses are generated by your configured local Ollama model.</div>
+    <div class="privacy-card"><div class="privacy-title">◇ &nbsp; Private session</div>Your library and chat history are isolated to this browser session. Relevant document text is sent to the configured AI provider when you ask a question.</div>
   </aside>
   <main class="workspace">
-    <header class="topbar"><div><div class="eyebrow">YOUR PRIVATE KNOWLEDGE SPACE</div><div class="top-title">Document assistant</div></div><div id="status" class="status">Checking local AI…</div></header>
+    <header class="topbar"><div><div class="eyebrow">YOUR PRIVATE KNOWLEDGE SPACE</div><div class="top-title">Document assistant</div></div><div id="status" class="status" role="status" aria-live="polite">Checking AI provider…</div></header>
     <section class="content">
-      <section class="welcome"><h1>Think deeper.<br><span class="gradient-text">Discover more.</span></h1><p>Your knowledge, better understood. Ask questions, summarize information, and compare your documents in one private workspace.</p><div class="welcome-foot"><span class="info-pill">⌁ Local AI</span><span class="info-pill">▤ Document insights</span><span class="info-pill">◎ Source passages</span></div></section>
+      <section class="welcome"><h1>Think deeper.<br><span class="gradient-text">Discover more.</span></h1><p>Your knowledge, better understood. Ask questions, summarize information, and compare your documents in one private workspace.</p><div class="welcome-foot"><span class="info-pill">◇ Private session</span><span class="info-pill">▤ Document insights</span><span class="info-pill">◎ Source passages</span></div></section>
       <div class="mode-area"><div class="mode-label">What would you like to do?</div><div class="mode-row"><button type="button" class="mode-button active" data-mode="ask">✳ &nbsp; Ask documents</button><button type="button" class="mode-button" data-mode="summarize">≡ &nbsp; Summarize</button><button type="button" class="mode-button" data-mode="compare">⇄ &nbsp; Compare documents</button></div></div>
       <div id="chatFeed" class="chat-feed"><div class="message assistant"><div class="message-label">✦ &nbsp; DocMind AI</div><div class="message-body">Welcome! Start by adding a document to your library. Then ask questions about its contents, create a summary, or compare two or more documents.</div></div></div>
     </section>
-    <div class="composer"><form class="composer-inner" id="chatForm"><textarea id="question" aria-label="Your message" placeholder="Ask a question about your documents…" rows="2"></textarea><div class="composer-bottom"><span class="hint">Local AI · Verify important information</span><button class="send" id="sendButton" type="submit">Send &nbsp; ↑</button></div></form></div>
+    <div class="composer"><form class="composer-inner" id="chatForm"><textarea id="question" aria-label="Your message" placeholder="Ask a question about your documents…" rows="2"></textarea><div class="composer-bottom"><span class="hint">Private session · Verify important information</span><button class="send" id="sendButton" type="submit">Send &nbsp; ↑</button></div></form></div>
     <div class="footer">DocMind AI · Think Deeper. With Your Documents.</div>
   </main>
-  <aside class="sources-panel"><div class="panel-heading"><div class="panel-heading-icon">▤</div><span>Sources &amp; references</span></div><div class="panel-desc">Explore the document passages associated with your latest response.</div><div class="source-count">Retrieved passages</div><div id="sourceList" class="source-list"><div class="empty">Source passages will appear here after you ask a question.</div></div><div class="source-note"><strong>About sources</strong><br>These excerpts show the passages provided to the local AI. They are not independent verification that every generated claim is correct.</div></aside>
+  <aside class="sources-panel"><div class="panel-heading"><div class="panel-heading-icon">▤</div><span>Sources &amp; references</span></div><div class="panel-desc">Explore the document passages associated with your latest response.</div><div class="source-count">Retrieved passages</div><div id="sourceList" class="source-list"><div class="empty">Source passages will appear here after you ask a question.</div></div><div class="source-note"><strong>About sources</strong><br>These excerpts were supplied to the configured AI provider. They are not independent verification that every generated claim is correct.</div></aside>
 </div>
 <script>
 // Use the local API in development and the Render API when hosted as a static site.
@@ -87,14 +87,30 @@ function addMessage(role, text) {
   message.scrollIntoView({behavior:"smooth", block:"nearest"});
 }
 
+function showEmptyState(container, message) {
+  const empty = document.createElement("div");
+  empty.className = "empty";
+  empty.textContent = message;
+  container.replaceChildren(empty);
+}
+
+function setStatus(message, offline = false) {
+  const status = $("status");
+  status.textContent = message;
+  status.classList.toggle("offline", offline);
+}
+
+const modeLabels = {
+  ask: {button: "Send  ↑", prompt: "Ask a question about your documents…", history: question => question || "Previous request"},
+  summarize: {button: "Summarize", prompt: "Optional: focus the summary on a topic…", history: () => "Summarize documents"},
+  compare: {button: "Compare", prompt: "Optional: what would you like compared?", history: () => "Compare documents"}
+};
+
 function showSources(sources) {
   const area = $("sourceList");
   area.replaceChildren();
   if (!sources || !sources.length) {
-    const empty = document.createElement("div");
-    empty.className = "empty";
-    empty.textContent = "No matching source passages were returned for this response.";
-    area.appendChild(empty);
+    showEmptyState(area, "No matching source passages were returned for this response.");
     return;
   }
   sources.forEach((source, index) => {
@@ -119,16 +135,13 @@ async function loadDocuments() {
     const response = await apiFetch("/api/documents");
     const data = await readApiResponse(response);
     const area = $("docList");
-    area.replaceChildren();
     const docs = data.documents || [];
     $("docCount").textContent = String(docs.length);
     if (!docs.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty";
-      empty.textContent = "Your library is empty. Add a document to get started.";
-      area.appendChild(empty);
+      showEmptyState(area, "Your library is empty. Add a document to get started.");
       return;
     }
+    area.replaceChildren();
     docs.forEach(doc => {
       const item = document.createElement("div");
       item.className = "doc-item";
@@ -165,34 +178,29 @@ async function loadDocuments() {
       item.append(icon, detail, del);
       area.appendChild(item);
     });
-  } catch (_) {
-    const area = $("docList");
-    area.replaceChildren();
-    const empty = document.createElement("div");
-    empty.className = "empty";
-    empty.textContent = "Could not load your library. Refresh the page to retry.";
-    area.appendChild(empty);
+  } catch (error) {
+    console.error("Could not load the document library:", error);
+    $("docCount").textContent = "!";
+    showEmptyState($("docList"), "Could not load your library. Refresh the page to retry.");
   }
 }
 
 async function checkStatus() {
-  const status = $("status");
   try {
     const response = await apiFetch("/api/status");
     const data = await readApiResponse(response);
-    if (!data.ollama_running) {
-      status.textContent = "○ Ollama offline";
-      status.className = "status offline";
+    if (data.provider && data.provider !== "Ollama") {
+      setStatus(`● ${data.provider} configured`);
+    } else if (!data.ollama_running) {
+      setStatus("○ AI provider unavailable", true);
     } else if (!data.model_available) {
-      status.textContent = "○ Model not found";
-      status.className = "status offline";
+      setStatus("○ Ollama model not found", true);
     } else {
-      status.textContent = "● Local AI connected";
-      status.className = "status";
+      setStatus("● Ollama connected");
     }
-  } catch (_) {
-    status.textContent = "○ Connection unavailable";
-    status.className = "status offline";
+  } catch (error) {
+    console.error("Could not check the AI provider:", error);
+    setStatus("○ Backend unavailable", true);
   }
 }
 
@@ -224,22 +232,15 @@ $("fileInput").onchange = async event => {
 };
 
 function setMode(mode) {
+  if (!modeLabels[mode]) return;
   currentMode = mode;
   document.querySelectorAll(".mode-button").forEach(button => {
     const active = button.dataset.mode === mode;
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
-  if (mode === "ask") {
-    $("question").placeholder = "Ask a question about your documents…";
-    $("sendButton").textContent = "Send  ↑";
-  } else if (mode === "summarize") {
-    $("question").placeholder = "Optional: focus the summary on a topic…";
-    $("sendButton").textContent = "Summarize";
-  } else {
-    $("question").placeholder = "Optional: what would you like compared?";
-    $("sendButton").textContent = "Compare";
-  }
+  $("question").placeholder = modeLabels[mode].prompt;
+  $("sendButton").textContent = modeLabels[mode].button;
   $("question").focus();
 }
 
@@ -255,8 +256,9 @@ async function submitChat() {
     $("question").focus();
     return;
   }
-  const userMessage = currentMode === "ask" ? question :
-    (currentMode === "summarize" ? "Summarize documents" : "Compare documents") + (question ? `: ${question}` : "");
+  const userMessage = currentMode === "ask"
+    ? question
+    : `${modeLabels[currentMode].history()}${question ? `: ${question}` : ""}`;
   addMessage("user", userMessage);
   $("question").value = "";
   busy = true;
@@ -276,7 +278,7 @@ async function submitChat() {
   } finally {
     busy = false;
     $("sendButton").disabled = false;
-    $("sendButton").textContent = currentMode === "ask" ? "Send  ↑" : currentMode === "summarize" ? "Summarize" : "Compare";
+    $("sendButton").textContent = modeLabels[currentMode].button;
   }
 }
 
@@ -297,12 +299,13 @@ async function loadHistory() {
     if (!messages.length) return;
     $("chatFeed").replaceChildren();
     messages.forEach(item => {
-      const label = item.mode === "summarize" ? "Summarize documents" : item.mode === "compare" ? "Compare documents" : item.question;
-      addMessage("user", label || "Previous request");
+      const label = (modeLabels[item.mode] || modeLabels.ask).history(item.question);
+      addMessage("user", label);
       addMessage("assistant", item.answer || "");
     });
-  } catch (_) {
+  } catch (error) {
     // History is optional; keep the rest of the UI usable if it cannot load.
+    console.warn("Could not load chat history:", error);
   }
 }
 
