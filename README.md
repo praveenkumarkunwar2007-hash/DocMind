@@ -11,6 +11,7 @@ pinned: false
 # DocMind AI
 
 DocMind AI is a document assistant powered by FastAPI, SQLite, and configurable AI providers.
+Link :- https://docmind-y5n4.onrender.com/
 
 ## Features
 - **Isolated workspaces:** Each browser receives a cryptographically random, HttpOnly session cookie. Documents, chunks, and chat history are scoped to that session.
