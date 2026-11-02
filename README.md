@@ -26,9 +26,11 @@ DocMind AI is a document assistant powered by FastAPI, SQLite, and configurable 
 ## Local Windows setup
 
 1. Install **Python 3.12** and add it to PATH.
-2. To use local inference, install Ollama and download the model:
+2. To use your Ollama model, install Ollama and configure its URL and model name in PowerShell:
    ```bash
-   ollama pull qwen2.5:0.5b
+   $env:OLLAMA_URL = "http://127.0.0.1:11434"
+   $env:OLLAMA_MODEL = "hf.co/<your-user>/<your-Qwen-repository>"
+   ollama pull $env:OLLAMA_MODEL
    ```
 3. From the repository directory, install dependencies and start the backend:
    ```cmd
@@ -58,7 +60,7 @@ GitHub Pages hosts only the static frontend; document and chat API requests use 
 Create a Docker web service with the repository root as its root directory and `Dockerfile` as its Dockerfile. The container starts with:
 
 ```sh
-uvicorn app:app --app-dir backend --host 0.0.0.0 --port ${PORT:-8000}
+uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
 ```
 
 Render supplies `PORT`; the container defaults to 8000. `GET /health` returns `{"status":"ok"}`. Configure `FRONTEND_ORIGINS` as a comma-separated list of exact frontend origins, for example:
@@ -67,13 +69,22 @@ Render supplies `PORT`; the container defaults to 8000. `GET /health` returns `{
 https://praveenkumarkunwar2007-hash.github.io
 ```
 
-Configure at least one inference provider in Render's environment settings:
+Configure inference providers in Render's environment settings. Ollama is tried first, then Groq, then Hugging Face by default. Set `PROVIDER_ORDER` to change this order. Ollama requires both `OLLAMA_URL` and `OLLAMA_MODEL`; for a Hugging Face GGUF model, use a name such as `hf.co/owner/repository`. `OLLAMA_URL` must be a host URL, without a model path. The default Groq model is `openai/gpt-oss-20b`; set `GROQ_MODEL` to override it. Hugging Face fallback is enabled only when both `HF_TOKEN` and `HF_MODEL` are set. Requests have a minimum timeout of 120 seconds; set `REQUEST_TIMEOUT` to a higher value if needed.
 
-- `HF_TOKEN` (and optionally `HF_INFERENCE_MODEL`)
-- `GROQ_API_KEY`
-- `OLLAMA_URL` and optionally `MODEL_NAME` when Ollama is reachable from Render. `127.0.0.1` only works when Ollama runs in the same container.
+The backend sends retrieved document passages to each configured inference provider in `PROVIDER_ORDER` until one succeeds. Configure only providers you trust with your documents. Do not put credentials in frontend code. The `.pkl` checkpoint is not loaded or used by the application; it is intentionally excluded from the Docker image. Ollama must be running separately and reachable from Render; `127.0.0.1` only works when Ollama runs in the same container.
 
-Do not configure secrets in frontend code. The `.pkl` checkpoint is not loaded or used by the application; inference is performed by the configured provider. It is intentionally excluded from the Docker image, so it cannot make container startup download or load a 1.84 GB file.
+Example Render variables (replace the example host, model, and credentials):
+
+```text
+OLLAMA_URL=https://your-private-ollama-host
+OLLAMA_MODEL=hf.co/your-user/DocMind-Qwen-Model
+PROVIDER_ORDER=ollama,groq,hf
+REQUEST_TIMEOUT=120
+GROQ_API_KEY=your-groq-api-key
+GROQ_MODEL=openai/gpt-oss-20b
+HF_TOKEN=your-hugging-face-token
+HF_MODEL=your-user/your-enabled-model
+```
 
 Render's default filesystem is ephemeral. To keep documents and chat history across restarts, attach a persistent disk mounted at `/var/data` and set `DOCMIND_DATA_DIR=/var/data`. Without a persistent disk, stored data can be lost when the service restarts or redeploys. The database is shared by the process but every document, chunk retrieval, deletion, and history query is filtered by its opaque session owner ID.
 
@@ -81,20 +92,6 @@ The Pages frontend can override the backend URL by setting `DOCMIND_API_URL` in 
 
 ---
 
-## Repository & Git LFS Notes
+## Model checkpoint
 
-This repository may contain large model files such as `backend/qwen2.5_0.5b_model.pkl`. The application does not load this checkpoint; local inference uses Ollama instead. Git LFS may be needed when managing this large file in Git:
-1. Ensure Git LFS is initialized:
-   ```bash
-   git lfs install
-   ```
-2. `.gitattributes` is configured to track `*.pkl` with Git LFS:
-   ```
-   *.pkl filter=lfs diff=lfs merge=lfs -text
-   ```
-3. Stage, commit, and push normally:
-   ```bash
-   git add .
-   git commit -m "DocMind AI with Git LFS tracking"
-   git push origin main
-   ```
+Large model checkpoints such as `backend/qwen2.5_0.5b_model.pkl` are local-only and ignored by Git. The application does not load this file; inference uses the configured Ollama, Groq, or Hugging Face provider. Do not force-add model checkpoints to the repository.

@@ -36,8 +36,8 @@ if errorlevel 1 goto error
 .venv\Scripts\python.exe -m pip install -r backend\requirements.txt
 if errorlevel 1 goto error
 echo.
-echo Setup complete. Make sure Ollama is installed and the model is downloaded:
-echo ollama pull qwen2.5:0.5b
+echo Setup complete. Install Ollama and configure OLLAMA_URL and OLLAMA_MODEL
+echo before starting the app. See the local setup section in README.md.
 echo.
 echo Start the website with run_docmindai.bat
 pause

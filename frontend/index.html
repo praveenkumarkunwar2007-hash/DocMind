@@ -62,12 +62,42 @@ async function readApiResponse(response) {
   try {
     data = await response.json();
   } catch {
-    throw new Error(`The server returned an invalid response (HTTP ${response.status}).`);
+    const error = new Error(`The server returned an invalid response (HTTP ${response.status}).`);
+    error.status = response.status;
+    throw error;
   }
   if (!response.ok) {
-    throw new Error(data.error || data.detail || `Request failed (HTTP ${response.status}).`);
+    const error = new Error(data.detail || data.error || `Request failed (HTTP ${response.status}).`);
+    error.status = response.status;
+    throw error;
   }
   return data;
+}
+
+function wait(milliseconds) {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+async function postChatWithRetry(options) {
+  let lastError;
+  for (let retry = 0; retry <= 3; retry++) {
+    try {
+      const response = await apiFetch("/api/chat", options);
+      if (response.status === 503 && retry < 3) {
+        setStatus(`AI provider unavailable; retrying (${retry + 1}/3)…`, true);
+        await wait(5000 + Math.floor(Math.random() * 5001));
+        continue;
+      }
+      return await readApiResponse(response);
+    } catch (error) {
+      lastError = error;
+      const retryable = error.status === 503 || error instanceof TypeError;
+      if (!retryable || retry === 3) throw error;
+      setStatus(`Connection interrupted; retrying (${retry + 1}/3)…`, true);
+      await wait(5000 + Math.floor(Math.random() * 5001));
+    }
+  }
+  throw lastError;
 }
 
 const $ = id => document.getElementById(id);
@@ -190,14 +220,12 @@ async function checkStatus() {
   try {
     const response = await apiFetch("/api/status");
     const data = await readApiResponse(response);
-    if (data.provider && data.provider !== "Ollama") {
-      setStatus(`● ${data.provider} configured`);
-    } else if (!data.ollama_running) {
-      setStatus("○ AI provider unavailable", true);
-    } else if (!data.model_available) {
-      setStatus("○ Ollama model not found", true);
+    if (data.provider) {
+      setStatus(`● ${data.provider} connected`);
     } else {
-      setStatus("● Ollama connected");
+      const providers = Object.values(data.providers || {});
+      const configured = providers.some(provider => provider.configured);
+      setStatus(configured ? "○ Configured AI providers unavailable" : "○ No AI provider configured", true);
     }
   } catch (error) {
     console.error("Could not check the AI provider:", error);
@@ -266,16 +294,19 @@ async function submitChat() {
   $("sendButton").disabled = true;
   $("sendButton").textContent = "Working…";
   try {
-    const response = await apiFetch("/api/chat", {
+    const data = await postChatWithRetry({
       method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({question, mode:currentMode})
     });
-    const data = await readApiResponse(response);
     addMessage("assistant", data.answer || "No answer was returned.");
     showSources(data.sources || []);
   } catch (error) {
-    addMessage("assistant", `Unable to complete the request: ${error.message}`);
+    if (error.status === 503 || error instanceof TypeError) {
+      addMessage("assistant", "AI is temporarily unavailable after several attempts. Please try again shortly.");
+    } else {
+      addMessage("assistant", `Unable to complete the request: ${error.message}`);
+    }
   } finally {
     busy = false;
     $("sendButton").disabled = false;
@@ -311,6 +342,23 @@ async function loadHistory() {
 }
 
 async function initializeApp() {
+  setStatus("Waking up server, this can take up to a minute…", true);
+  const healthDeadline = Date.now() + 120000;
+  let backendReady = false;
+  while (Date.now() < healthDeadline) {
+    try {
+      await readApiResponse(await apiFetch("/health", {cache:"no-store"}));
+      backendReady = true;
+      break;
+    } catch (error) {
+      console.warn("Waiting for the backend to wake:", error);
+      await wait(5000);
+    }
+  }
+  if (!backendReady) {
+    setStatus("○ Backend unavailable", true);
+    return;
+  }
   try {
     await readApiResponse(await apiFetch("/api/session"));
   } catch (error) {

@@ -8,6 +8,7 @@ ENV/
 .env
 .env.*
 *.env
+*.pkl
 
 # Local private content and database
 # The app stores uploaded document text, passages, and chat history here.

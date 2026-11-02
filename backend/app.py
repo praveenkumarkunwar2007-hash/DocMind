@@ -8,9 +8,9 @@ import os
 import re
 import secrets
 import sqlite3
-import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from docx import Document as WordDocument
@@ -36,26 +36,54 @@ INDEX_PATH = STATIC_DIR / "index.html"
 # Chat endpoint – simple wrapper for the LLM
 # ---------------------------------------------------------------------------
 PORT = int(os.environ.get("PORT", 8000))
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-MODEL_NAME = os.getenv("MODEL_NAME", "qwen2.5:0.5b")
-HF_TOKEN = os.getenv("HF_TOKEN", "")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-HF_INFERENCE_MODEL = os.getenv("HF_INFERENCE_MODEL", "Qwen/Qwen2.5-72B-Instruct")
+OLLAMA_URL_SETTING = os.getenv("OLLAMA_URL", "").strip()
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "").strip()
+HF_TOKEN = os.getenv("HF_TOKEN", "").strip().strip("'").strip('"')
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip().strip("'").strip('"')
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b").strip()
+HF_MODEL = os.getenv("HF_MODEL", "").strip()
+PROVIDER_ORDER = tuple(
+    dict.fromkeys(
+        provider.strip().lower()
+        for provider in os.getenv("PROVIDER_ORDER", "ollama,groq,hf").split(",")
+        if provider.strip()
+    )
+)
+REQUEST_TIMEOUT = max(120, int(os.getenv("REQUEST_TIMEOUT", "120")))
 SESSION_COOKIE_NAME = "docmind_session"
 SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
-INFERENCE_TIMEOUT_SECONDS = 45
 DEFAULT_FRONTEND_ORIGINS = (
     "https://praveenkumarkunwar2007-hash.github.io,"
     "https://docmind-y5n4.onrender.com,"
     "http://localhost:8000,"
-    "http://127.0.0.1:8000"
+    "http://127.0.0.1:8000,"
+    "http://localhost:3000,"
+    "http://localhost:5173,"
+    "http://127.0.0.1:3000,"
+    "http://127.0.0.1:5173"
 )
 ALLOWED_ORIGINS = [
     origin.strip().rstrip("/")
     for origin in os.getenv("FRONTEND_ORIGINS", DEFAULT_FRONTEND_ORIGINS).split(",")
     if origin.strip()
 ]
+LOCAL_ORIGIN_PATTERN = re.compile(r"^https?://(?:localhost|127\.0\.0\.1)(?::\d+)?$")
+
+
+def normalize_ollama_url(value: str) -> str:
+    if not value:
+        return ""
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        logger.warning("OLLAMA_URL must be an http(s) host URL; Ollama is disabled.")
+        return ""
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        logger.warning("OLLAMA_URL must contain only the host; ignoring its path and query.")
+    return urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/")
+
+
+OLLAMA_URL = normalize_ollama_url(OLLAMA_URL_SETTING)
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # 8 MiB per upload
 MAX_TEXT_CHARS = 200_000
 MAX_CONTEXT_CHARS = 6_000
@@ -65,9 +93,12 @@ app = FastAPI(title="DocMind AI", version="1.0.0")
 
 # Serve static files and favicon
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/favicon.svg", include_in_schema=False)
 @app.get("/favicon.ico", include_in_schema=False)
-async def favicon():
-    return FileResponse(STATIC_DIR / "favicon.svg")
+def favicon() -> FileResponse:
+    return FileResponse(STATIC_DIR / "favicon.svg", media_type="image/svg+xml")
 
 
 # ---------------------------------------------------------------------------
@@ -76,9 +107,10 @@ async def favicon():
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=LOCAL_ORIGIN_PATTERN.pattern,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -118,11 +150,13 @@ def resolve_session_id(cookie_value: str) -> tuple[str, str]:
 async def session_cookie_middleware(request: Request, call_next):
     origin = request.headers.get("origin")
     request_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
+    normalized_origin = origin.rstrip("/") if origin else ""
     if (
         request.method in {"POST", "PUT", "PATCH", "DELETE"}
         and origin
-        and origin.rstrip("/") not in ALLOWED_ORIGINS
-        and origin.rstrip("/") != request_origin.rstrip("/")
+        and normalized_origin not in ALLOWED_ORIGINS
+        and normalized_origin != request_origin.rstrip("/")
+        and not LOCAL_ORIGIN_PATTERN.fullmatch(normalized_origin)
     ):
         return JSONResponse(
             status_code=403,
@@ -152,6 +186,16 @@ async def session_cookie_middleware(request: Request, call_next):
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    if exc.status_code == 503:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": "AI provider temporarily unavailable",
+                "detail": str(exc.detail),
+            },
+            headers=exc.headers,
+        )
     return JSONResponse(
         status_code=exc.status_code,
         content={"success": False, "error": str(exc.detail)},
@@ -265,7 +309,11 @@ def extract_text(filename: str, raw: bytes) -> str:
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Could not read this file: {exc}") from exc
+        logger.warning("Could not parse uploaded %s file (%s).", suffix, type(exc).__name__)
+        raise HTTPException(
+            status_code=400,
+            detail="Could not read this file. Ensure it is a valid PDF or DOCX.",
+        ) from exc
 
     text = text.strip()
     if not text:
@@ -335,161 +383,151 @@ def list_documents(owner_id: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def _provider_is_configured(provider: str) -> bool:
+    if provider == "ollama":
+        return bool(OLLAMA_URL and OLLAMA_MODEL)
+    if provider == "groq":
+        return bool(GROQ_API_KEY and GROQ_MODEL)
+    if provider == "hf":
+        return bool(HF_TOKEN and HF_MODEL)
+    return False
+
+
+def _sanitize_provider_message(message: str) -> str:
+    clean = re.sub(r"<[^>]*>", " ", message)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    for secret in (GROQ_API_KEY, HF_TOKEN):
+        if secret:
+            clean = clean.replace(secret, "[redacted]")
+    return clean[:240]
+
+
+def _provider_response_error(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return f"HTTP {response.status_code}"
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            error = error.get("message")
+        if isinstance(error, str) and error.strip():
+            return f"HTTP {response.status_code}: {_sanitize_provider_message(error)}"
+    return f"HTTP {response.status_code}"
+
+
+def _chat_completion(url: str, api_key: str, model: str, prompt: str) -> str:
+    response = requests.post(
+        url,
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+            "max_tokens": 512,
+        },
+        timeout=REQUEST_TIMEOUT,
+    )
+    if response.status_code < 200 or response.status_code >= 300:
+        raise RuntimeError(_provider_response_error(response))
+    payload = response.json()
+    choices = payload.get("choices", []) if isinstance(payload, dict) else []
+    answer = ""
+    if choices and isinstance(choices[0], dict):
+        message = choices[0].get("message", {})
+        if isinstance(message, dict) and isinstance(message.get("content"), str):
+            answer = message["content"].strip()
+    if not answer:
+        raise ValueError("Provider returned an empty answer")
+    return answer
+
+
+def _call_ollama(prompt: str) -> str:
+    response = requests.post(
+        f"{OLLAMA_URL}/api/generate",
+        json={
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "keep_alive": "2m",
+            "options": {
+                "num_ctx": 2048,
+                "num_predict": 300,
+                "temperature": 0.2,
+            },
+        },
+        timeout=REQUEST_TIMEOUT,
+    )
+    if response.status_code < 200 or response.status_code >= 300:
+        raise RuntimeError(_provider_response_error(response))
+    payload = response.json()
+    answer = payload.get("response", "") if isinstance(payload, dict) else ""
+    if not isinstance(answer, str) or not answer.strip():
+        raise ValueError("Ollama returned an empty answer")
+    return answer.strip()
+
+
 def call_local_model(prompt: str) -> str:
-    """Try configured Hugging Face, Groq, and Ollama providers within a bounded time."""
-    failures: list[str] = []
-    deadline = time.monotonic() + INFERENCE_TIMEOUT_SECONDS
+    """Try configured inference providers in the requested order."""
+    failures: list[tuple[str, str]] = []
+    configured = [
+        provider
+        for provider in PROVIDER_ORDER
+        if _provider_is_configured(provider)
+    ]
 
-    def request_timeout(maximum: float) -> float:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("Inference request deadline exceeded.")
-        return min(maximum, remaining)
-
-    if HF_TOKEN:
-        token = HF_TOKEN.strip().strip("'").strip('"')
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
-        models = [HF_INFERENCE_MODEL]
-        if HF_INFERENCE_MODEL != "Qwen/Qwen2.5-7B-Instruct":
-            models.append("Qwen/Qwen2.5-7B-Instruct")
-
-        for model in models:
-            for url in (
-                "https://router.huggingface.co/v1/chat/completions",
-                "https://router.huggingface.co/hf-inference/v1/chat/completions",
-            ):
-                if time.monotonic() >= deadline:
-                    break
-                try:
-                    response = requests.post(
-                        url,
-                        headers=headers,
-                        json={
-                            "model": model,
-                            "messages": [{"role": "user", "content": prompt}],
-                            "temperature": 0.2,
-                            "max_tokens": 512,
-                        },
-                        timeout=request_timeout(20),
-                    )
-                    if response.status_code == 200:
-                        choices = response.json().get("choices", [])
-                        if choices:
-                            answer = choices[0].get("message", {}).get("content", "").strip()
-                            if answer:
-                                return answer
-                        failures.append(f"Hugging Face ({model}): empty response")
-                    else:
-                        failures.append(f"Hugging Face ({model}) HTTP {response.status_code}")
-                        logger.warning(
-                            "Hugging Face returned HTTP %s: %s",
-                            response.status_code,
-                            response.text[:200],
-                        )
-                        if response.status_code in (401, 403):
-                            break
-                except (requests.RequestException, ValueError, KeyError, IndexError, TimeoutError) as exc:
-                    failures.append(f"Hugging Face ({model}): {type(exc).__name__}")
-                    logger.warning("Hugging Face request failed: %s", exc, exc_info=True)
-
-    if GROQ_API_KEY and time.monotonic() < deadline:
-        groq_key = GROQ_API_KEY.strip().strip("'").strip('"')
-        headers = {
-            "Authorization": f"Bearer {groq_key}",
-            "Content-Type": "application/json",
-        }
-        for model in ("llama-3.1-8b-instant", "llama3-8b-8192", "gemma2-9b-it"):
-            if time.monotonic() >= deadline:
-                break
-            try:
-                response = requests.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers=headers,
-                    json={
-                        "model": model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0.2,
-                        "max_tokens": 512,
-                    },
-                    timeout=request_timeout(15),
-                )
-                if response.status_code == 200:
-                    answer = response.json()["choices"][0]["message"]["content"].strip()
-                    if answer:
-                        return answer
-                    failures.append(f"Groq ({model}): empty response")
-                else:
-                    failures.append(f"Groq ({model}) HTTP {response.status_code}")
-                    logger.warning(
-                        "Groq returned HTTP %s: %s",
-                        response.status_code,
-                        response.text[:200],
-                    )
-                    if response.status_code in (401, 403):
-                        break
-            except (requests.RequestException, ValueError, KeyError, IndexError, TimeoutError) as exc:
-                failures.append(f"Groq ({model}): {type(exc).__name__}")
-                logger.warning("Groq request failed: %s", exc, exc_info=True)
-
-    if time.monotonic() < deadline:
+    for provider in configured:
         try:
-            response = requests.post(
-                f"{OLLAMA_URL}/api/generate",
-                json={
-                    "model": MODEL_NAME,
-                    "prompt": prompt,
-                    "stream": False,
-                    "keep_alive": "2m",
-                    "options": {
-                        "num_ctx": 2048,
-                        "num_predict": 300,
-                        "temperature": 0.2,
-                    },
-                },
-                timeout=request_timeout(30),
-            )
-            if response.status_code == 200:
-                answer = response.json().get("response", "").strip()
-                if answer:
-                    return answer
-                failures.append("Ollama: empty response")
-            else:
-                failures.append(f"Ollama HTTP {response.status_code}")
-                logger.warning(
-                    "Ollama returned HTTP %s: %s",
-                    response.status_code,
-                    response.text[:200],
+            if provider == "ollama":
+                return _call_ollama(prompt)
+            if provider == "groq":
+                return _chat_completion(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    GROQ_API_KEY,
+                    GROQ_MODEL,
+                    prompt,
                 )
-        except (requests.RequestException, ValueError, TimeoutError) as exc:
-            failures.append(f"Ollama: {type(exc).__name__}")
-            logger.warning("Ollama request failed: %s", exc, exc_info=True)
+            if provider == "hf":
+                return _chat_completion(
+                    "https://router.huggingface.co/v1/chat/completions",
+                    HF_TOKEN,
+                    HF_MODEL,
+                    prompt,
+                )
+        except requests.Timeout:
+            reason = "request timed out"
+        except requests.ConnectionError:
+            reason = "connection failed"
+        except requests.RequestException as exc:
+            reason = f"request failed ({type(exc).__name__})"
+        except (ValueError, RuntimeError) as exc:
+            reason = _sanitize_provider_message(str(exc))
+        except Exception as exc:
+            reason = f"request failed ({type(exc).__name__})"
+        logger.warning("%s provider failed: %s", provider, reason)
+        failures.append((provider, reason))
 
-    logger.error("No inference provider succeeded: %s", "; ".join(failures) or "deadline exceeded")
-    if not HF_TOKEN and not GROQ_API_KEY:
+    if not failures:
         raise HTTPException(
             status_code=503,
             detail=(
-                "No AI provider is available. Configure HF_TOKEN or GROQ_API_KEY on Render, "
-                "or set OLLAMA_URL to a reachable Ollama server."
+                "No inference provider is configured. Set OLLAMA_URL and OLLAMA_MODEL, "
+                "GROQ_API_KEY, or both HF_TOKEN and HF_MODEL."
             ),
         )
+
+    public_summary = "; ".join(
+        f"{provider}: {reason.split(':', 1)[0]}" for provider, reason in failures
+    )
     raise HTTPException(
         status_code=503,
-        detail="AI providers are unavailable. Check the backend logs and provider configuration.",
+        detail=f"All configured providers failed ({public_summary}). Check provider settings and server logs.",
     )
 
 
 class ChatInput(BaseModel):
     question: str = Field(default="", max_length=2_000)
     mode: str = Field(default="ask", max_length=20)
-
-
-@app.get("/favicon.ico", include_in_schema=False)
-def favicon() -> Response:
-    return Response(status_code=204)
 
 
 @app.get("/health")
@@ -509,27 +547,134 @@ def home() -> HTMLResponse:
     return HTMLResponse(INDEX_PATH.read_text(encoding="utf-8"))
 
 
+def _probe_openai_provider(
+    url: str,
+    api_key: str,
+    model: str,
+    configured: bool,
+) -> dict:
+    result: dict = {"configured": configured, "reachable": False, "model": model}
+    if not configured:
+        result["error"] = "Provider credentials or model are not configured."
+        return result
+    try:
+        response = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=5,
+        )
+        if response.status_code < 200 or response.status_code >= 300:
+            result["error"] = f"HTTP {response.status_code}"
+            return result
+        payload = response.json()
+        model_ids = []
+        if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+            model_ids = [
+                item.get("id", "")
+                for item in payload["data"]
+                if isinstance(item, dict) and isinstance(item.get("id", ""), str)
+            ]
+        result["reachable"] = True
+        result["model_available"] = model in model_ids
+        if not result["model_available"]:
+            result["error"] = f"Model '{model}' is not listed by the provider."
+    except requests.Timeout:
+        result["error"] = "Provider status request timed out."
+    except requests.ConnectionError:
+        result["error"] = "Provider is unreachable."
+    except (requests.RequestException, ValueError):
+        result["error"] = "Provider returned an invalid status response."
+    except Exception as exc:
+        logger.warning("Provider status probe failed (%s).", type(exc).__name__)
+        result["error"] = "Provider returned an invalid status response."
+    return result
+
+
 @app.get("/api/status")
 def status() -> dict:
-    if HF_TOKEN:
-        return {"ollama_running": True, "model_available": True, "model": HF_INFERENCE_MODEL, "provider": "Hugging Face"}
-    if GROQ_API_KEY:
-        return {"ollama_running": True, "model_available": True, "model": "Qwen 2.5", "provider": "Groq"}
-    try:
-        response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=2)
-        response.raise_for_status()
-        models = response.json().get("models", [])
-        names = [item.get("name", "") for item in models]
-        available = any(name == MODEL_NAME or name.startswith(MODEL_NAME + ":") for name in names)
-        return {
-            "ollama_running": True,
-            "model_available": available,
-            "model": MODEL_NAME,
-            "models": names,
-            "provider": "Ollama"
-        }
-    except requests.RequestException:
-        return {"ollama_running": False, "model_available": False, "model": MODEL_NAME, "models": []}
+    ollama_configured = _provider_is_configured("ollama")
+    ollama_status: dict = {
+        "configured": ollama_configured,
+        "reachable": False,
+        "model": OLLAMA_MODEL or None,
+        "model_available": False,
+    }
+    if not ollama_configured:
+        ollama_status["error"] = "Set OLLAMA_URL and OLLAMA_MODEL to enable Ollama."
+    else:
+        try:
+            response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
+            if response.status_code < 200 or response.status_code >= 300:
+                ollama_status["error"] = f"HTTP {response.status_code}"
+            else:
+                payload = response.json()
+                models = payload.get("models", []) if isinstance(payload, dict) else []
+                model_names = [
+                    item.get("name", "")
+                    for item in models
+                    if isinstance(item, dict) and isinstance(item.get("name", ""), str)
+                ]
+                model_available = any(
+                    name == OLLAMA_MODEL or name.startswith(OLLAMA_MODEL + ":")
+                    for name in model_names
+                )
+                ollama_status.update(
+                    reachable=True,
+                    model_available=model_available,
+                    models=model_names,
+                )
+                if not model_available:
+                    ollama_status["error"] = f"Model '{OLLAMA_MODEL}' is not installed."
+        except requests.Timeout:
+            ollama_status["error"] = "Ollama status request timed out."
+        except requests.ConnectionError:
+            ollama_status["error"] = "Ollama is unreachable."
+        except (requests.RequestException, ValueError):
+            ollama_status["error"] = "Ollama returned an invalid status response."
+        except Exception as exc:
+            logger.warning("Ollama status probe failed (%s).", type(exc).__name__)
+            ollama_status["error"] = "Ollama returned an invalid status response."
+
+    groq_configured = _provider_is_configured("groq")
+    groq_status = _probe_openai_provider(
+        "https://api.groq.com/openai/v1/models",
+        GROQ_API_KEY,
+        GROQ_MODEL,
+        groq_configured,
+    )
+    hf_configured = _provider_is_configured("hf")
+    hf_status = _probe_openai_provider(
+        "https://router.huggingface.co/v1/models",
+        HF_TOKEN,
+        HF_MODEL,
+        hf_configured,
+    )
+    providers = {
+        "ollama": ollama_status,
+        "groq": groq_status,
+        "hf": hf_status,
+    }
+    active_provider = next(
+        (
+            provider
+            for provider in PROVIDER_ORDER
+            if providers.get(provider, {}).get("configured")
+            and providers.get(provider, {}).get("reachable")
+            and providers.get(provider, {}).get("model_available", True)
+        ),
+        None,
+    )
+    return {
+        "provider": {"ollama": "Ollama", "groq": "Groq", "hf": "Hugging Face"}.get(
+            active_provider
+        ),
+        "provider_order": list(PROVIDER_ORDER),
+        "providers": providers,
+        "ollama_running": ollama_status["reachable"],
+        "model_available": ollama_status["model_available"],
+        "model": OLLAMA_MODEL or None,
+        "models": ollama_status.get("models", []),
+    }
 
 
 @app.get("/api/documents")
